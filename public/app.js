@@ -208,6 +208,7 @@ let joinTeam = null;
 let joinName = localStorage.getItem('dcy-name') || '';
 let lobbyName = '';
 let createMode = 'physical';
+let createTeamNames = { white: '', black: '' };
 let showSettings = false;
 
 const TEAMS = ['white', 'black'];
@@ -364,6 +365,12 @@ function lobbyScreen() {
         ${t('modePhysical')}<br><span class="hint">${t('modePhysicalSub')}</span></button>
       <button class="${createMode === 'digital' ? 'white sel' : ''}" data-action="createmode" data-mode="digital" style="padding:12px 0">
         ${t('modeDigital')}<br><span class="hint">${t('modeDigitalSub')}</span></button>
+    </div>
+    <div class="row" style="gap:8px;margin-top:-6px">
+      <input type="text" id="ctn-white" maxlength="20" placeholder="⚪ ${t('teamNamePh')}"
+        value="${esc(createTeamNames.white)}" dir="auto" style="flex:1">
+      <input type="text" id="ctn-black" maxlength="20" placeholder="⚫ ${t('teamNamePh')}"
+        value="${esc(createTeamNames.black)}" dir="auto" style="flex:1">
     </div>
     <div class="lobby-list">
       ${list || `<div class="dim" style="text-align:center;padding:24px 0">${t('noLobbies')}</div>`}
@@ -761,7 +768,8 @@ document.addEventListener('click', e => {
       const name = (lobbyName || (document.getElementById('lobby-name') || {}).value || '').trim();
       if (!name) { toast(t('errLobbyName')); return; }
       lobbyName = '';
-      send('createLobby', { name, mode: createMode });
+      send('createLobby', { name, mode: createMode, teamNames: createTeamNames });
+      createTeamNames = { white: '', black: '' };
       break;
     }
     case 'enterlobby':
@@ -906,6 +914,8 @@ document.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'join-name') { joinName = el.value; return; }
   if (el.id === 'lobby-name') { lobbyName = el.value; return; }
+  if (el.id === 'ctn-white') { createTeamNames.white = el.value; return; }
+  if (el.id === 'ctn-black') { createTeamNames.black = el.value; return; }
   const b = el.dataset.bind;
   if (!b || !view) return;
   const my = view.you.team;

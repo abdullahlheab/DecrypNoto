@@ -228,6 +228,9 @@ function handleAction(clientId, body) {
       const name = text(body.name, 30).trim();
       if (!name) return err('Give the lobby a name');
       const l = blankLobby(name, body.mode === 'physical' ? 'physical' : 'digital');
+      const tn = body.teamNames || {};
+      l.teamNames.white = text(tn.white, 20).trim();
+      l.teamNames.black = text(tn.black, 20).trim();
       state.lobbies[l.id] = l;
       state.clientLobby[clientId] = l.id;
       break;
