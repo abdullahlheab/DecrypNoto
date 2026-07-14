@@ -1,0 +1,6 @@
+# runtime game state
+game-state.json
+
+node_modules/
+.DS_Store
+Thumbs.db

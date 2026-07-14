@@ -1,0 +1,12 @@
+services:
+  decrypnoto:
+    build: .
+    container_name: decrypnoto
+    ports:
+      - "4321:4321"
+    volumes:
+      - decrypnoto-data:/data
+    restart: unless-stopped
+
+volumes:
+  decrypnoto-data:
