@@ -90,6 +90,7 @@ const STR = {
     logIntercepted: '🕵️ intercepted', logInterceptMissed: 'intercept missed',
     // settings
     youTitle: 'You', playersTitle: 'Players', lobbyTitle: 'Lobby', langTitle: 'Language',
+    teamsTitle: 'Team names', teamNamePh: 'custom name (optional)',
     reqSwitch: t => `Request switch to ${t}`,
     switchPending: '⏳ Switch pending — tap to cancel',
     switchHint: 'Everyone online on the other team must accept the switch — no sneaky peeking.',
@@ -173,6 +174,7 @@ const STR = {
     logCode: 'الشفرة', logDecoded: '✓ فكّوها', logMiscomm: g => `💥 سوء تفاهم (${g})`,
     logIntercepted: '🕵️ انعترضت', logInterceptMissed: 'الاعتراض خاب',
     youTitle: 'أنت', playersTitle: 'اللاعبين', lobbyTitle: 'اللوبي', langTitle: 'اللغة',
+    teamsTitle: 'أسماء الفرق', teamNamePh: 'اسم مخصص (اختياري)',
     reqSwitch: t => `اطلب الانتقال إلى ${t}`,
     switchPending: '⏳ الطلب معلّق — اضغط للإلغاء',
     switchHint: 'كل المتصلين في الفريق الثاني لازم يوافقون — بلا غش.',
@@ -209,7 +211,11 @@ let createMode = 'physical';
 let showSettings = false;
 
 const TEAMS = ['white', 'black'];
-const teamLabel = team => (team === 'white' ? t('teamWhite') : t('teamBlack'));
+const teamLabel = team => {
+  const custom = view && view.teamNames && view.teamNames[team];
+  if (custom) return `${team === 'white' ? '⚪' : '⚫'} ${esc(custom)}`;
+  return team === 'white' ? t('teamWhite') : t('teamBlack');
+};
 const otherTeam = team => (team === 'white' ? 'black' : 'white');
 const $app = document.getElementById('app');
 
@@ -713,6 +719,13 @@ function settingsSheet() {
           : `<button class="btn wide" data-action="switchteam">${t('reqSwitch', teamLabel(otherTeam(view.you.team)))}</button>`
       }</div>
       <div class="hint">${t('switchHint')}</div>
+      <h3>${t('teamsTitle')}</h3>
+      <div class="row"><span class="lbl">⚪</span>
+        <input type="text" maxlength="20" data-bind="teamname" data-team="white"
+          placeholder="${t('teamNamePh')}" value="${esc((view.teamNames || {}).white || '')}" dir="auto" style="flex:1"></div>
+      <div class="row"><span class="lbl">⚫</span>
+        <input type="text" maxlength="20" data-bind="teamname" data-team="black"
+          placeholder="${t('teamNamePh')}" value="${esc((view.teamNames || {}).black || '')}" dir="auto" style="flex:1"></div>
       <h3>${t('langTitle')}</h3>
       <button class="btn wide" data-action="togglelang">🌐 ${t('langButton')}</button>
       <h3>${t('playersTitle')}</h3>
@@ -905,6 +918,11 @@ document.addEventListener('input', e => {
     const team = el.dataset.team;
     view.rounds[view.rounds.length - 1][team].clues[i] = val;
     sendDebounced('pclue' + team + i, 'setClue', { index: i, text: val, team });
+  } else if (b === 'teamname') {
+    const team = el.dataset.team;
+    if (!view.teamNames) view.teamNames = { white: '', black: '' };
+    view.teamNames[team] = val;
+    sendDebounced('tn' + team, 'setTeamName', { team, name: val });
   } else if (b === 'keyword') {
     view.teams[my].keywords[i] = val;
     sendDebounced('kw' + i, 'setKeyword', { slot: i, text: val });

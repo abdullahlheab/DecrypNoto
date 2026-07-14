@@ -45,6 +45,7 @@ function blankLobby(name, mode) {
     createdAt: Date.now(),
     players: {},                // clientId -> {name, team}
     teams: { white: blankTeam(), black: blankTeam() },
+    teamNames: { white: '', black: '' },  // custom display names, '' = default
     rounds: [blankRound()],
     tokens: blankTokens(),      // manual counters, used in physical mode only
     switchRequests: {},         // requestId -> {clientId, to, approvals: [clientId]}
@@ -66,6 +67,7 @@ for (const l of Object.values(state.lobbies)) {
   if (!l.tokens) l.tokens = blankTokens();
   if (!l.switchRequests) l.switchRequests = {};
   if (!l.formerTeams) l.formerTeams = {};
+  if (!l.teamNames) l.teamNames = { white: '', black: '' };
 }
 
 function save() {
@@ -142,6 +144,7 @@ function viewFor(clientId) {
   v.lobbies = lobbies;
   v.mode = lobby.mode;
   v.tokens = lobby.tokens;
+  v.teamNames = { white: lobby.teamNames.white, black: lobby.teamNames.black };
 
   // Team-private data: keywords, hypotheses about enemy words, notes
   for (const t of TEAMS) {
@@ -389,6 +392,12 @@ function handleAction(clientId, body) {
       if (!full) return err('The encryptor must set a full 3-digit code first');
       tr.code = full;
       tr.revealed = true;
+      break;
+    }
+    case 'setTeamName': {
+      const e = needTeam(); if (e) return e;
+      if (!TEAMS.includes(body.team)) return err('Bad team');
+      lobby.teamNames[body.team] = text(body.name, 20).trim();
       break;
     }
     case 'adjustToken': {
