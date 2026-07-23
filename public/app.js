@@ -99,6 +99,12 @@ const STR = {
     newGame: "🗑 New game (wipes this lobby's notes)",
     confirmNewGame: 'Start a brand-new game? All rounds, words and notes will be wiped for BOTH teams.',
     confirmNewGame2: 'Really sure? This cannot be undone.',
+    // timer
+    startTimerBtn: tm => `⏱ Start 1-min timer on ${tm}`,
+    timerYou: s => `⏱ ${s} — your team is on the clock!`,
+    timerThem: (tm, s) => `⏱ ${s} on ${tm}`,
+    timeUp: tm => `🚨 TIME'S UP — ${tm}!`,
+    stopTimerBtn: 'Stop', silenceBtn: '🔇 Silence',
     // tabs
     tabRound: 'Round', tabEnemy: 'Enemy words', tabOurs: 'Our words', tabLog: 'Log'
   },
@@ -183,6 +189,11 @@ const STR = {
     newGame: '🗑 لعبة جديدة (يمسح ملاحظات اللوبي)',
     confirmNewGame: 'نبدأ لعبة جديدة؟ كل الجولات والكلمات والملاحظات بتنمسح للفريقين.',
     confirmNewGame2: 'متأكد؟ ما ينفع تتراجع.',
+    startTimerBtn: tm => `⏱ شغّل مؤقت دقيقة على ${tm}`,
+    timerYou: s => `⏱ ${s} — فريقك على المؤقت! بسرعة!`,
+    timerThem: (tm, s) => `⏱ ${s} على ${tm}`,
+    timeUp: tm => `🚨 انتهى الوقت — ${tm}!`,
+    stopTimerBtn: 'إيقاف', silenceBtn: '🔇 اسكته',
     tabRound: 'الجولة', tabEnemy: 'كلماتهم', tabOurs: 'كلماتنا', tabLog: 'السجل'
   }
 };
@@ -222,7 +233,11 @@ const $app = document.getElementById('app');
 
 // ---------- server connection ----------
 const es = new EventSource('/events?clientId=' + encodeURIComponent(clientId));
-es.onmessage = e => { view = JSON.parse(e.data); render(); };
+es.onmessage = e => {
+  view = JSON.parse(e.data);
+  if (view.serverNow) clockOffset = view.serverNow - Date.now();
+  render();
+};
 
 async function send(type, payload = {}) {
   try {
@@ -264,6 +279,64 @@ function eqCode(a, b) {
 }
 function fullCode(a) { return Array.isArray(a) && a.length === 3 && a.every(d => d >= 1 && d <= 4); }
 function codeStr(c) { return Array.isArray(c) ? c.map(d => d == null ? '·' : d).join(' ') : ''; }
+
+// ---------- pressure timer + alarm ----------
+// serverNow arrives with every state push; the offset corrects phone clock skew
+let clockOffset = 0;
+function serverTime() { return Date.now() + clockOffset; }
+function fmtSecs(s) { return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+let audioCtx = null, alarmNodes = null;
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
+}
+// audio needs a user gesture at least once; every tap keeps it unlocked
+document.addEventListener('pointerdown', unlockAudio, { capture: true });
+
+function startAlarm() {
+  if (alarmNodes) return;
+  unlockAudio();
+  if (!audioCtx) return;
+  try {
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.9;                      // LOUD
+    gain.connect(audioCtx.destination);
+    const osc = audioCtx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.value = 950;
+    const lfo = audioCtx.createOscillator();    // siren wobble
+    lfo.type = 'square';
+    lfo.frequency.value = 5;
+    const lfoGain = audioCtx.createGain();
+    lfoGain.gain.value = 320;
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+    osc.connect(gain);
+    osc.start();
+    lfo.start();
+    alarmNodes = { osc, lfo, gain };
+  } catch (e) { alarmNodes = null; }
+  if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400, 150, 400]);
+}
+function stopAlarm() {
+  if (!alarmNodes) return;
+  try { alarmNodes.osc.stop(); alarmNodes.lfo.stop(); alarmNodes.gain.disconnect(); } catch (e) {}
+  alarmNodes = null;
+  if (navigator.vibrate) navigator.vibrate(0);
+}
+
+// tick: keep countdowns fresh and fire/kill the alarm
+setInterval(() => {
+  if (!view || !view.you || !view.you.lobby || !view.you.team) { stopAlarm(); return; }
+  const tms = view.timers || {};
+  const active = TEAMS.filter(team => tms[team]);
+  const expired = active.some(team => tms[team].endsAt <= serverTime());
+  if (expired) startAlarm(); else stopAlarm();
+  if (active.length && !isTyping()) render();
+}, 500);
 
 // tokens: manual counters in physical mode, derived from revealed rounds in
 // digital mode (interceptions only count from round 2)
@@ -320,7 +393,7 @@ function render() {
   if (!view.you.name || !view.you.team) { $app.innerHTML = joinScreen(); return; }
 
   const tokens = calcTokens(view);
-  let html = header(tokens) + winBanner(tokens) + switchBanners();
+  let html = header(tokens) + winBanner(tokens) + switchBanners() + timerBar();
   html += '<main>';
   if (tab === 'round') html += roundTab();
   else if (tab === 'enemy') html += enemyTab();
@@ -460,6 +533,36 @@ function switchBanners() {
       </span>
     </div>`;
   }).join('');
+}
+
+// ---------- pressure timer bar ----------
+function timerBar() {
+  const my = view.you.team, opp = otherTeam(my);
+  const tms = view.timers || {};
+  let html = '';
+  for (const target of [my, opp]) {
+    const tm = tms[target];
+    if (!tm) continue;
+    const remain = Math.max(0, Math.ceil((tm.endsAt - serverTime()) / 1000));
+    const expired = remain <= 0;
+    const mine = target === my;
+    let btn;
+    if (expired) {
+      btn = `<button class="btn primary" data-action="stoptimer" data-team="${target}">${t('silenceBtn')}</button>`;
+    } else if (!mine) {
+      btn = `<button class="btn danger" data-action="stoptimer" data-team="${target}">${t('stopTimerBtn')}</button>`;
+    } else {
+      btn = ''; // your own countdown can't be cancelled — sweat it out
+    }
+    const label = expired
+      ? t('timeUp', teamLabel(target))
+      : (mine ? t('timerYou', fmtSecs(remain)) : t('timerThem', teamLabel(target), fmtSecs(remain)));
+    html += `<div class="banner timerbn ${expired ? 'alarming' : (mine ? 'lose' : '')}">${label} ${btn}</div>`;
+  }
+  if (!tms[opp]) {
+    html += `<div class="timer-start"><button class="btn ghost" data-action="starttimer">${t('startTimerBtn', teamLabel(opp))}</button></div>`;
+  }
+  return html;
 }
 
 // ---------- round tab ----------
@@ -816,6 +919,13 @@ document.addEventListener('click', e => {
       break;
     case 'tok':
       send('adjustToken', { team: a.team, kind: a.kind, delta: Number(a.delta) });
+      break;
+    case 'starttimer':
+      unlockAudio();
+      send('startTimer');
+      break;
+    case 'stoptimer':
+      send('stopTimer', { team: a.team });
       break;
     case 'nextphysical': {
       const r = view.rounds[view.rounds.length - 1];

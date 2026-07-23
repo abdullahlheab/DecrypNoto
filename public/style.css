@@ -71,6 +71,17 @@ header {
   font-weight: 400; font-size: .88rem;
   display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
 }
+.banner.timerbn {
+  display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+.banner.timerbn.alarming {
+  animation: alarm-flash .4s steps(2) infinite;
+  background: #3a1010; border-color: var(--danger); color: #fff;
+}
+@keyframes alarm-flash { 50% { background: #8a1a1a; border-color: #ff9d9d; } }
+.timer-start { display: flex; justify-content: center; margin: 4px 14px 0; }
+.timer-start .btn { font-size: .82rem; }
 
 /* ---------- cards ---------- */
 main { padding: 6px 14px 12px; display: flex; flex-direction: column; gap: 12px; }

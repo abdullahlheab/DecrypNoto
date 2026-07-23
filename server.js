@@ -49,7 +49,8 @@ function blankLobby(name, mode) {
     rounds: [blankRound()],
     tokens: blankTokens(),      // manual counters, used in physical mode only
     switchRequests: {},         // requestId -> {clientId, to, approvals: [clientId]}
-    formerTeams: {}             // clientId -> last team, blocks leave-and-rejoin cheating
+    formerTeams: {},            // clientId -> last team, blocks leave-and-rejoin cheating
+    timers: { white: null, black: null }  // pressure timers, keyed by the team being timed
   };
 }
 
@@ -68,6 +69,7 @@ for (const l of Object.values(state.lobbies)) {
   if (!l.switchRequests) l.switchRequests = {};
   if (!l.formerTeams) l.formerTeams = {};
   if (!l.teamNames) l.teamNames = { white: '', black: '' };
+  if (!l.timers) l.timers = { white: null, black: null };
 }
 
 function save() {
@@ -145,6 +147,8 @@ function viewFor(clientId) {
   v.mode = lobby.mode;
   v.tokens = lobby.tokens;
   v.teamNames = { white: lobby.teamNames.white, black: lobby.teamNames.black };
+  v.timers = { white: lobby.timers.white, black: lobby.timers.black };
+  v.serverNow = Date.now();  // lets clients correct for clock skew
 
   // Team-private data: keywords, hypotheses about enemy words, notes
   for (const t of TEAMS) {
@@ -327,6 +331,7 @@ function handleAction(clientId, body) {
       lobby.teams = { white: blankTeam(), black: blankTeam() };
       lobby.rounds = [blankRound()];
       lobby.tokens = blankTokens();
+      lobby.timers = { white: null, black: null };
       // fresh words = nothing to protect anymore
       lobby.switchRequests = {};
       lobby.formerTeams = {};
@@ -341,6 +346,7 @@ function handleAction(clientId, body) {
         return err('Both teams must reveal first');
       }
       lobby.rounds.push(blankRound());
+      lobby.timers = { white: null, black: null };
       break;
     }
     case 'claimEncryptor': {
@@ -395,6 +401,26 @@ function handleAction(clientId, body) {
       if (!full) return err('The encryptor must set a full 3-digit code first');
       tr.code = full;
       tr.revealed = true;
+      break;
+    }
+    case 'startTimer': {
+      const e = needTeam(); if (e) return e;
+      const target = otherTeam(myTeam);
+      if (lobby.timers[target]) return err('A timer is already running on them');
+      lobby.timers[target] = { endsAt: Date.now() + 60000, startedBy: me.name };
+      break;
+    }
+    case 'stopTimer': {
+      const e = needTeam(); if (e) return e;
+      if (!TEAMS.includes(body.team)) return err('Bad team');
+      const timer = lobby.timers[body.team];
+      if (!timer) break;
+      // before it rings: only the team that started it may cancel.
+      // once it rings: anyone can silence it.
+      if (Date.now() < timer.endsAt && myTeam === body.team) {
+        return err('Only the team that started the timer can stop it early');
+      }
+      lobby.timers[body.team] = null;
       break;
     }
     case 'setTeamName': {
