@@ -10,11 +10,13 @@ Built for the classic problem: taking Decrypto notes on your phone is miserable,
 - **Two game modes per lobby:**
   - 🃏 **Physical cards** (pure note-taking) — you play with the real box. No turns, no roles: anyone types the clues being said out loud, for either team. When a code card is revealed, anyone punches in the 3 digits — and every clue is instantly **auto-filed under the right keyword column**. Manual 🕵️/💥 token counters mirror the physical tokens.
   - 📱 **App codes** (full digital flow) — the app replaces the code cards. One teammate claims the **encryptor** role and draws a secret code only they can see, types the clues, both teams lock in guesses, then reveal auto-scores interception/miscommunication tokens and win/lose banners.
-- **The intercept sheet** — every enemy clue, grouped under word slots 1–4 with round tags, plus a hypothesis field per word and a shared team notepad. Your own sheet shows which clues *you've* already used per keyword, so you notice when you're being too predictable.
+- **Draft & submit clue entry** — clues (and codes in physical mode) are typed as a local draft and published with a **Submit** button, so nobody watches your half-typed words. Unsubmitted drafts show at the top of the Log tab, visible only to you.
+- **The intercept sheet** — every enemy clue, grouped under word slots 1–4 with round tags, plus a hypothesis field per word and a shared team notepad. Your own sheet shows which clues *you've* already used per keyword, so you notice when you're being too predictable. There's also a **private per-player notepad** nobody else can see.
+- **Lobby owner** — the creator (👑) manages the lobby: only they can delete it while people are inside, start a new game, rename the other team, or **kick players**.
 - **Team secrets stay secret** — keywords, hypotheses, notes, unrevealed codes and guesses are filtered **server-side** per player. The other team can't peek, even in the network tab.
 - **Anti-cheat team switching** — switching teams requires every online member of the destination team to accept (they're about to show you their words). Leaving and rejoining on the other team is blocked too.
 - **English / Arabic** — 🌐 button toggles the whole UI, with proper RTL layout for Arabic. Per-device choice; clue text is direction-aware in both.
-- **Live everything** — server-sent events push every keystroke to every phone. State persists to disk, so a server restart never loses a game.
+- **Live everything** — server-sent events push every change to every phone instantly. State persists to disk, so a server restart never loses a game.
 
 ## Run it
 

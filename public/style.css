@@ -188,6 +188,13 @@ button.btn:disabled { opacity: .4; cursor: default; }
 .log-team { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; font-size: .9rem; }
 .log-clues { color: var(--text); }
 .log-meta { color: var(--dim); font-size: .8rem; display: flex; gap: 10px; flex-wrap: wrap; }
+.log-draft {
+  color: var(--warn); font-size: .88rem; padding: 4px 8px; margin: 2px 0;
+  border: 1px dashed #6a5a2a; border-radius: 8px; background: #1c1810;
+}
+.log-draft-tag { color: var(--dim); font-size: .72rem; margin-inline-start: 6px; }
+.submitted-line { margin-top: 6px; }
+.kick-btn { margin-inline-start: auto; padding: 4px 10px; font-size: .75rem; }
 
 /* ---------- tab bar ---------- */
 nav {

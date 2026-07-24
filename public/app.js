@@ -99,6 +99,15 @@ const STR = {
     newGame: "🗑 New game (wipes this lobby's notes)",
     confirmNewGame: 'Start a brand-new game? All rounds, words and notes will be wiped for BOTH teams.',
     confirmNewGame2: 'Really sure? This cannot be undone.',
+    // drafts / submit
+    submitBtn: 'Submit', submittedLine: c => `Submitted: ${c}`,
+    draftTag: '✍️ draft — not submitted yet (only you see this)',
+    nothingSubmitted: 'nothing submitted yet',
+    // private notes
+    myNotes: '🔒 My private notes', myNotesHint: 'only you can see these — saved to your player',
+    myNotesPh: 'your own scratchpad…',
+    // user management
+    kickBtn: 'Kick', confirmKick: n => `Kick ${n} from the lobby?`,
     // timer
     startTimerBtn: tm => `⏱ Start 1-min timer on ${tm}`,
     timerYou: s => `⏱ ${s} — your team is on the clock!`,
@@ -189,6 +198,12 @@ const STR = {
     newGame: '🗑 لعبة جديدة (يمسح ملاحظات اللوبي)',
     confirmNewGame: 'نبدأ لعبة جديدة؟ كل الجولات والكلمات والملاحظات بتنمسح للفريقين.',
     confirmNewGame2: 'متأكد؟ ما ينفع تتراجع.',
+    submitBtn: 'إرسال', submittedLine: c => `المرسل: ${c}`,
+    draftTag: '✍️ مسودة — ما انرسلت بعد (ما يشوفها غيرك)',
+    nothingSubmitted: 'ما انرسل شي بعد',
+    myNotes: '🔒 ملاحظاتي الخاصة', myNotesHint: 'ما يشوفها أحد غيرك — محفوظة بحسابك',
+    myNotesPh: 'دفترك الخاص…',
+    kickBtn: 'اطرد', confirmKick: n => `تطرد ${n} من اللوبي؟`,
     startTimerBtn: tm => `⏱ شغّل مؤقت دقيقة على ${tm}`,
     timerYou: s => `⏱ ${s} — فريقك على المؤقت! بسرعة!`,
     timerThem: (tm, s) => `⏱ ${s} على ${tm}`,
@@ -356,6 +371,55 @@ function calcTokens(st) {
     }
   });
   return tk;
+}
+
+// ---------- clue drafts (local until submitted) ----------
+// drafts live in localStorage per lobby+round: typing never broadcasts;
+// the Submit button publishes clues (+ code in physical mode) in one shot.
+let draftCache = null, draftCacheKey = '';
+function blankDraft() {
+  return {
+    white: { clues: ['', '', ''], code: [null, null, null] },
+    black: { clues: ['', '', ''], code: [null, null, null] }
+  };
+}
+function draftKey() { return `dcy-draft-${view.you.lobby.id}-${view.rounds.length - 1}`; }
+function getDraft() {
+  const k = draftKey();
+  if (draftCacheKey !== k) {
+    draftCacheKey = k;
+    draftCache = null;
+    try { draftCache = JSON.parse(localStorage.getItem(k)); } catch (e) {}
+    // clear stale drafts from finished rounds / other lobbies
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('dcy-draft-') && key !== k) localStorage.removeItem(key);
+    }
+  }
+  if (!draftCache || !draftCache.white || !draftCache.black) {
+    draftCache = blankDraft();
+    // seed from what's already submitted so it's editable in place
+    const r = view.rounds[view.rounds.length - 1];
+    for (const team of TEAMS) {
+      draftCache[team].clues = r[team].clues.slice();
+      if (Array.isArray(r[team].code)) draftCache[team].code = r[team].code.slice();
+    }
+    saveDraft();
+  }
+  return draftCache;
+}
+function saveDraft() {
+  try { localStorage.setItem(draftKey(), JSON.stringify(draftCache)); } catch (e) {}
+}
+function draftDirty(team) {
+  const d = getDraft()[team];
+  const r = view.rounds[view.rounds.length - 1][team];
+  if (d.clues.some((c, i) => (c || '') !== (r.clues[i] || ''))) return true;
+  if (view.mode === 'physical') {
+    const oc = Array.isArray(r.code) ? r.code : [null, null, null];
+    if (d.code.some((c, i) => (c == null ? null : c) !== (oc[i] == null ? null : oc[i]))) return true;
+  }
+  return false;
 }
 
 // clues a team has given, grouped into keyword columns 1-4
@@ -586,21 +650,30 @@ function physicalRoundTab() {
   const ri = view.rounds.length - 1;
   const r = view.rounds[ri];
   let html = '';
+  const draft = getDraft();
   for (const team of [my, opp]) {
     const tr = r[team];
     const filed = fullCode(tr.code);
+    const d = draft[team];
+    const dirty = draftDirty(team);
     let body = `<div class="row"><span class="lbl">${t('clues')}</span><span class="hint">${t('typeAsSaid')}</span></div>`;
     for (let i = 0; i < 3; i++) {
       body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
-        <input type="text" dir="auto" maxlength="80" data-bind="pclue" data-team="${team}" data-i="${i}"
-          placeholder="${t('cluePh', i + 1)}" value="${esc(tr.clues[i])}"></div>`;
+        <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${team}" data-i="${i}"
+          placeholder="${t('cluePh', i + 1)}" value="${esc(d.clues[i])}"></div>`;
     }
     body += `<div class="divider"></div>
       <div class="row"><span class="lbl">${t('code')}</span>
         ${filed
           ? `<span class="badge good">${t('filed')}</span>`
           : `<span class="hint">${t('codeFromCard')}</span>`}</div>`;
-    body += picker('pcode', Array.isArray(tr.code) ? tr.code : [null, null, null], team);
+    body += picker('pcode', d.code, team);
+    const submittedStr = tr.clues.some(c => c) || Array.isArray(tr.code)
+      ? `${tr.clues.map(c => esc(c || '·')).join(' / ')}${Array.isArray(tr.code) ? ' — ' + codeStr(tr.code) : ''}`
+      : t('nothingSubmitted');
+    body += `<div class="row" style="margin-top:10px">
+      <button class="btn ${dirty ? 'primary' : 'ghost'} wide" data-action="submitclues" data-team="${team}">${t('submitBtn')}</button></div>
+    <div class="hint submitted-line" dir="auto">${t('submittedLine', submittedStr)}</div>`;
     html += `<div class="card"><h2><span class="team-tag ${team}">${teamLabel(team)}</span> — ${team === my ? t('ourTrans') : t('theirTrans')}</h2>${body}</div>`;
   }
 
@@ -653,12 +726,22 @@ function myTransmission(tr, ri) {
       <span class="badge ${tr.code ? 'good' : ''}">${tr.code ? t('codeSetHidden') : t('waitingEncryptor')}</span></div>`;
   }
 
-  // clues
+  // clues — drafted locally, published on submit
+  const d = getDraft()[my];
+  const dirty = !tr.revealed && draftDirty(my);
   body += `<div class="row"><span class="lbl">${t('clues')}</span></div>`;
   for (let i = 0; i < 3; i++) {
     body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
-      <input type="text" dir="auto" maxlength="80" data-bind="clue" data-i="${i}"
-        placeholder="${t('cluePh', i + 1)}" value="${esc(tr.clues[i])}" ${tr.revealed ? 'disabled' : ''}></div>`;
+      <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${my}" data-i="${i}"
+        placeholder="${t('cluePh', i + 1)}" value="${esc(tr.revealed ? tr.clues[i] : d.clues[i])}" ${tr.revealed ? 'disabled' : ''}></div>`;
+  }
+  if (!tr.revealed) {
+    const submittedStr = tr.clues.some(c => c)
+      ? tr.clues.map(c => esc(c || '·')).join(' / ')
+      : t('nothingSubmitted');
+    body += `<div class="row">
+      <button class="btn ${dirty ? 'primary' : 'ghost'} wide" data-action="submitclues" data-team="${my}">${t('submitBtn')}</button></div>
+    <div class="hint submitted-line" dir="auto">${t('submittedLine', submittedStr)}</div>`;
   }
 
   // team guess
@@ -756,6 +839,9 @@ function enemyTab() {
   html += `</div>
   <div class="card"><h2>${t('teamNotes')}</h2>
     <textarea dir="auto" data-bind="notes" placeholder="${t('notesPh')}">${esc(view.teams[my].notes)}</textarea>
+  </div>
+  <div class="card"><h2>${t('myNotes')}<span class="spacer"></span><span class="hint">${t('myNotesHint')}</span></h2>
+    <textarea dir="auto" data-bind="mynotes" placeholder="${t('myNotesPh')}">${esc(view.you.notes || '')}</textarea>
   </div>`;
   return html;
 }
@@ -804,8 +890,22 @@ function logTab() {
       } else {
         meta = `<span>${t('inProgress')}</span>`;
       }
+      // unsubmitted draft for the current round — sits above the older rounds,
+      // visible only on this device
+      let draftRow = '';
+      if (i === view.rounds.length - 1 && (view.mode === 'physical' || team === view.you.team)) {
+        const d = getDraft()[team];
+        const hasDraftText = d.clues.some(c => (c || '').trim()) ||
+          (view.mode === 'physical' && d.code.some(x => x != null));
+        if (hasDraftText && draftDirty(team)) {
+          const dcode = view.mode === 'physical' && d.code.some(x => x != null) ? ' — ' + codeStr(d.code) : '';
+          draftRow = `<div class="log-draft" dir="auto">${d.clues.map(c => esc(c || '·')).join(' / ')}${dcode}
+            <span class="log-draft-tag">${t('draftTag')}</span></div>`;
+        }
+      }
       html += `<div class="log-team">
         <div><span class="team-tag ${team}">${teamLabel(team)}</span> <span class="log-clues" dir="auto">${clues}</span></div>
+        ${draftRow}
         <div class="log-meta">${meta}</div></div>`;
     }
     html += '</div>';
@@ -842,7 +942,10 @@ function settingsSheet() {
       <div class="player-list">${players.map(p => `
         <div class="p"><span class="dot ${p.online ? 'on' : ''}"></span>
           <span class="team-tag ${p.team}">${p.team === 'white' ? '⚪' : '⚫'}</span>
-          ${esc(p.name)}${p.you ? ` (${t('you')})` : ''}</div>`).join('') || `<span class="dim">${t('nobodyYet')}</span>`}
+          ${p.owner ? '👑 ' : ''}${esc(p.name)}${p.you ? ` (${t('you')})` : ''}
+          ${view.you.isOwner && !p.you
+            ? `<button class="btn ghost kick-btn" data-action="kick" data-pid="${esc(p.pid)}" data-pname="${esc(p.name)}">${t('kickBtn')}</button>`
+            : ''}</div>`).join('') || `<span class="dim">${t('nobodyYet')}</span>`}
       </div>
       <h3>${t('lobbyTitle')}</h3>
       <button class="btn wide" data-action="leavelobby">${t('leaveLobby')}</button>
@@ -920,6 +1023,17 @@ document.addEventListener('click', e => {
     case 'tok':
       send('adjustToken', { team: a.team, kind: a.kind, delta: Number(a.delta) });
       break;
+    case 'submitclues': {
+      const team = a.team;
+      const d = getDraft()[team];
+      const payload = { team, clues: d.clues };
+      if (view.mode === 'physical') payload.code = d.code;
+      send('submitClues', payload);
+      break;
+    }
+    case 'kick':
+      if (confirm(t('confirmKick', a.pname || '?'))) send('kickPlayer', { pid: a.pid });
+      break;
     case 'starttimer':
       unlockAudio();
       send('startTimer');
@@ -994,9 +1108,11 @@ function handlePick(kind, slot, digit, team) {
   const r = view.rounds[ri];
   let cur, sendIt;
   if (kind === 'pcode') {
+    // physical-mode code digits are part of the draft — published on submit
     const tm = team === 'white' || team === 'black' ? team : my;
-    cur = Array.isArray(r[tm].code) ? r[tm].code.slice() : [null, null, null];
-    sendIt = code => { r[tm].code = code; send('setCode', { code, team: tm }); };
+    const d = getDraft();
+    cur = d[tm].code.slice();
+    sendIt = code => { d[tm].code = code; saveDraft(); };
   } else if (kind === 'code') {
     cur = Array.isArray(r[my].code) ? r[my].code.slice() : [null, null, null];
     sendIt = code => { r[my].code = code; send('setCode', { code }); };
@@ -1031,13 +1147,13 @@ document.addEventListener('input', e => {
   const my = view.you.team;
   const i = Number(el.dataset.i || 0);
   const val = el.value;
-  if (b === 'clue') {
-    view.rounds[view.rounds.length - 1][my].clues[i] = val;
-    sendDebounced('clue' + i, 'setClue', { index: i, text: val });
-  } else if (b === 'pclue') {
+  if (b === 'draftclue') {
     const team = el.dataset.team;
-    view.rounds[view.rounds.length - 1][team].clues[i] = val;
-    sendDebounced('pclue' + team + i, 'setClue', { index: i, text: val, team });
+    getDraft()[team].clues[i] = val;
+    saveDraft();               // local only — nothing broadcast until submit
+  } else if (b === 'mynotes') {
+    view.you.notes = val;
+    sendDebounced('mynotes', 'setMyNotes', { text: val });
   } else if (b === 'teamname') {
     const team = el.dataset.team;
     if (!view.teamNames) view.teamNames = { white: '', black: '' };
