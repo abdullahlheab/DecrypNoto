@@ -6,7 +6,7 @@ Built for the classic problem: taking Decrypto notes on your phone is miserable,
 
 ## Features
 
-- **Lobbies** — create a room, friends tap it from the lobby list and join a team. Each lobby is a fully independent game with a live roster (green dot = online right now). Several groups can play at once.
+- **Lobbies** — create a room, friends tap it from the lobby list and join a team. Each lobby is a fully independent game with a live roster (green dot = online right now). Several groups can play at once. Lobbies nobody has used for **3 days** delete themselves (configurable with the `LOBBY_TTL_MS` env var).
 - **Two game modes per lobby:**
   - 🃏 **Physical cards** (pure note-taking) — you play with the real box. No turns, no roles: anyone types the clues being said out loud, for either team. When a code card is revealed, anyone punches in the 3 digits — and every clue is instantly **auto-filed under the right keyword column**. Manual 🕵️/💥 token counters mirror the physical tokens.
   - 📱 **App codes** (full digital flow) — the app replaces the code cards. One teammate claims the **encryptor** role and draws a secret code only they can see, types the clues, both teams lock in guesses, then reveal auto-scores interception/miscommunication tokens and win/lose banners.

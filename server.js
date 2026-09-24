@@ -17,6 +17,9 @@ const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, 'game-state.js
 const TEAMS = ['white', 'black'];
 const MAX_LOBBIES = 200;
 const TIMER_MS = 60000;
+// lobbies nobody has touched for this long are deleted automatically
+const LOBBY_TTL_MS = Number(process.env.LOBBY_TTL_MS) || 3 * 24 * 60 * 60 * 1000;
+const PRUNE_EVERY_MS = Number(process.env.PRUNE_EVERY_MS) || 10 * 60 * 1000;
 
 // ---------- game state ----------
 function blankTeam() {
@@ -46,6 +49,7 @@ function blankLobby(name, mode) {
     name,
     mode,                       // 'digital' (app draws/hides codes) | 'physical' (real cards, pure notes)
     createdAt: Date.now(),
+    lastActive: Date.now(),     // bumped on every action; idle past LOBBY_TTL_MS → deleted
     owner: null,                // clientId of the lobby admin
     players: {},                // clientId -> {name, team, notes}
     teams: { white: blankTeam(), black: blankTeam() },
@@ -88,6 +92,7 @@ for (const [id, l] of Object.entries(state.lobbies)) {
   if (!l.banned) l.banned = {};
   if (!l.teamNames) l.teamNames = { white: '', black: '' };
   if (!l.timers) l.timers = { white: null, black: null };
+  if (!l.lastActive) l.lastActive = Date.now();
   if (l.owner === undefined || (l.owner && !own(l.players, l.owner))) {
     l.owner = Object.keys(l.players)[0] || null;
   }
@@ -598,10 +603,28 @@ function handleAction(clientId, body) {
     default:
       return err('Unknown action');
   }
+  for (const l of [lobby, own(state.lobbies, own(state.clientLobby, clientId))]) {
+    if (l && own(state.lobbies, l.id)) l.lastActive = Date.now();
+  }
   save();
   broadcast();
   return { ok: true };
 }
+
+function pruneIdleLobbies() {
+  const cutoff = Date.now() - LOBBY_TTL_MS;
+  const stale = Object.values(state.lobbies).filter(l => l.lastActive < cutoff).map(l => l.id);
+  if (!stale.length) return;
+  for (const lid of stale) delete state.lobbies[lid];
+  for (const [cid, lid] of Object.entries(state.clientLobby)) {
+    if (stale.includes(lid)) delete state.clientLobby[cid];
+  }
+  console.log(`Auto-deleted ${stale.length} idle lobb${stale.length === 1 ? 'y' : 'ies'}`);
+  save();
+  broadcast();
+}
+pruneIdleLobbies();
+setInterval(pruneIdleLobbies, PRUNE_EVERY_MS);
 
 // ---------- http server ----------
 const MIME = {
@@ -696,6 +719,12 @@ const server = http.createServer((req, res) => {
     res.end(req.method === 'HEAD' ? undefined : data);
   });
 });
+
+// Node closes idle keep-alive sockets after 5s by default; a browser (or the
+// Cloudflare tunnel) reusing one at that instant gets ECONNRESET and the
+// player's action is silently dropped. Outlast the clients' own idle timers.
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 // SSE keep-alive ping
 setInterval(() => {

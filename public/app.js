@@ -647,7 +647,7 @@ function timerBar() {
   const my = view.you.team, opp = otherTeam(my);
   const tms = view.timers || {};
   let html = '';
-  for (const target of [my, opp]) {
+  for (const target of TEAMS) {
     const tm = tms[target];
     if (!tm) continue;
     const remain = Math.max(0, Math.ceil((tm.endsAt - serverTime()) / 1000));
@@ -678,7 +678,8 @@ function roundTab() {
   const my = view.you.team, opp = otherTeam(my);
   const ri = view.rounds.length - 1;
   const r = view.rounds[ri];
-  let html = myTransmission(r[my], ri) + enemyTransmission(r[opp], ri);
+  const mine = myTransmission(r[my], ri), theirs = enemyTransmission(r[opp], ri);
+  let html = my === 'white' ? mine + theirs : theirs + mine;   // white always on top
   if (r[my].revealed && r[opp].revealed) {
     html += `<button class="btn primary wide" data-action="next">${t('startRound', ri + 2)}</button>`;
   }
@@ -689,12 +690,12 @@ function roundTab() {
 // aloud for BOTH teams, then punches in the code from the real card once it's
 // revealed, which files the clues into the word columns.
 function physicalRoundTab() {
-  const my = view.you.team, opp = otherTeam(my);
+  const my = view.you.team;
   const ri = view.rounds.length - 1;
   const r = view.rounds[ri];
   let html = '';
   const draft = getDraft();
-  for (const team of [my, opp]) {
+  for (const team of TEAMS) {
     const tr = r[team];
     const filed = fullCode(tr.code);
     const d = draft[team];

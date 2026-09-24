@@ -33,9 +33,9 @@ const id = tag => `${tag}-${crypto.randomBytes(6).toString('hex')}`;
 
 // ---------- server lifecycle ----------
 let proc = null;
-async function startServer() {
+async function startServer(extraEnv = {}) {
   proc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-    env: { ...process.env, PORT: String(PORT), STATE_FILE },
+    env: { ...process.env, PORT: String(PORT), STATE_FILE, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   proc.stderrText = '';
@@ -162,6 +162,26 @@ async function httpAndSecurity() {
   const big = await post(JSON.stringify({ clientId: id('big'), type: 'setNotes', text: 'x'.repeat(70000) }));
   check('oversized body → 413', big.status === 413);
   check('unknown action → 400', (await act(id('u'), 'launchMissiles')).status === 400);
+
+  // an action sent on a connection that sat idle past Node's old 5s default
+  // used to be reset by the server and silently lost
+  const http = require('http');
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  const onSocket = (method, body) => new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port: PORT, method, path: method === 'GET' ? '/' : '/api/action', agent,
+      headers: body ? { 'content-type': 'application/json' } : {} }, res => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode, reused: r.reusedSocket }));
+    });
+    r.on('error', reject);
+    if (body) r.write(body);
+    r.end();
+  });
+  await onSocket('GET');
+  await sleep(5600);
+  const late = await onSocket('POST', JSON.stringify({ clientId: id('idle'), type: 'createLobby', name: 'late' })).catch(e => ({ error: e.code }));
+  check('action on a keep-alive connection idle >5s still lands', late.status === 200 && late.reused, late);
+  agent.destroy();
 
   const evil = id('evil');
   for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
@@ -473,6 +493,44 @@ async function timers() {
   await destroy(ctx);
 }
 
+async function idleExpiry() {
+  group('Idle lobbies auto-delete');
+  // shrink "3 days" to 1.5s and sweep every 200ms so the test runs quickly
+  await stopServer();
+  fs.writeFileSync(STATE_FILE, JSON.stringify({
+    lobbies: { ancient: { id: 'ancient', name: 'Ancient', createdAt: 1, players: {},
+      teams: { white: { keywords: ['', '', '', ''], oppGuesses: ['', '', '', ''], notes: '' }, black: { keywords: ['', '', '', ''], oppGuesses: ['', '', '', ''], notes: '' } },
+      rounds: [{ white: { encryptor: null, code: null, revealed: false, clues: ['', '', ''], ownGuess: null, interceptGuess: null },
+                 black: { encryptor: null, code: null, revealed: false, clues: ['', '', ''], ownGuess: null, interceptGuess: null } }] } },
+    clientLobby: {}
+  }));
+  await startServer({ LOBBY_TTL_MS: '1500', PRUNE_EVERY_MS: '200' });
+  const watcher = await new Player('watch').connect();
+  check('pre-existing lobby gets a grace period (not wiped on upgrade)', watcher.view.lobbies.some(l => l.id === 'ancient'));
+
+  const idle = await lobbyWith({ name: 'Idle', others: [['b1', 'black']] });
+  const busy = await lobbyWith({ name: 'Busy' });
+  check('new lobbies exist', watcher.view.lobbies.some(l => l.id === idle.lid) || !!(await watcher.waitFor(v => v.lobbies.some(l => l.id === busy.lid))));
+  // keep "Busy" alive with actions; leave "Idle" untouched (players still connected)
+  const end = Date.now() + 2600;
+  while (Date.now() < end) {
+    await busy.owner.do('setNotes', { text: String(Date.now()) });
+    await sleep(300);
+  }
+  const v = await watcher.waitFor(x => !x.lobbies.some(l => l.id === idle.lid), 1500);
+  check('idle lobby auto-deleted', !v.lobbies.some(l => l.id === idle.lid));
+  check('lobby with recent activity kept', v.lobbies.some(l => l.id === busy.lid));
+  check('grace-period lobby expires once idle too', !v.lobbies.some(l => l.id === 'ancient'));
+  check('players inside an expired lobby get bounced', (await idle.b1.waitFor(x => !x.you.lobby)).you.lobby === null);
+  check('re-entering an expired lobby rejected', !!(await idle.b1.do('enterLobby', { id: idle.lid })).error);
+  check('expiry persisted to disk', !JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).lobbies[idle.lid]);
+
+  await destroy(busy);
+  [idle.owner, idle.b1, watcher].forEach(p => p.disconnect());
+  await stopServer();
+  await startServer();
+}
+
 async function persistence() {
   group('Persistence & recovery');
   const ctx = await lobbyWith({ name: 'Persist', mode: 'physical', others: [['b1', 'black']] });
@@ -623,6 +681,7 @@ function clientLogic() {
     await kickAndPermissions();
     await timers();
     await persistence();
+    await idleExpiry();
     clientLogic();
   } catch (e) {
     fail++;
