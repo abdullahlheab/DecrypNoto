@@ -1,10 +1,14 @@
 'use strict';
 
+// ---------- storage (can throw in private mode / blocked site data) ----------
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
 // ---------- identity ----------
-let clientId = localStorage.getItem('dcy-id');
-if (!clientId) {
+let clientId = lsGet('dcy-id');
+if (!clientId || !/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) {
   clientId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
-  localStorage.setItem('dcy-id', clientId);
+  lsSet('dcy-id', clientId);
 }
 
 // ---------- language ----------
@@ -90,7 +94,7 @@ const STR = {
     logIntercepted: '🕵️ intercepted', logInterceptMissed: 'intercept missed',
     // settings
     youTitle: 'You', playersTitle: 'Players', lobbyTitle: 'Lobby', langTitle: 'Language',
-    teamsTitle: 'Team names', teamNamePh: 'custom name (optional)',
+    teamsTitle: 'Team names', teamNamePh: 'custom name (optional)', teamNameShort: 'Team name',
     reqSwitch: t => `Request switch to ${t}`,
     switchPending: '⏳ Switch pending — tap to cancel',
     switchHint: 'Everyone online on the other team must accept the switch — no sneaky peeking.',
@@ -99,6 +103,11 @@ const STR = {
     newGame: "🗑 New game (wipes this lobby's notes)",
     confirmNewGame: 'Start a brand-new game? All rounds, words and notes will be wiped for BOTH teams.',
     confirmNewGame2: 'Really sure? This cannot be undone.',
+    connLost: '⚠️ Connection lost — reconnecting…',
+    removedFromLobby: 'You were removed from the lobby (kicked or the lobby was deleted).',
+    ownerTag: 'owner', bannedTitle: 'Kicked players', allowBack: 'Allow back',
+    claimFirst: 'Claim the encryptor role to give clues.',
+    encryptorTyping: 'Clues appear here when the encryptor submits them.',
     // drafts / submit
     submitBtn: 'Submit', submittedLine: c => `Submitted: ${c}`,
     draftTag: '✍️ draft — not submitted yet (only you see this)',
@@ -189,7 +198,7 @@ const STR = {
     logCode: 'الشفرة', logDecoded: '✓ فكّوها', logMiscomm: g => `💥 سوء تفاهم (${g})`,
     logIntercepted: '🕵️ انعترضت', logInterceptMissed: 'الاعتراض خاب',
     youTitle: 'أنت', playersTitle: 'اللاعبين', lobbyTitle: 'اللوبي', langTitle: 'اللغة',
-    teamsTitle: 'أسماء الفرق', teamNamePh: 'اسم مخصص (اختياري)',
+    teamsTitle: 'أسماء الفرق', teamNamePh: 'اسم مخصص (اختياري)', teamNameShort: 'اسم الفريق',
     reqSwitch: t => `اطلب الانتقال إلى ${t}`,
     switchPending: '⏳ الطلب معلّق — اضغط للإلغاء',
     switchHint: 'كل المتصلين في الفريق الثاني لازم يوافقون — بلا غش.',
@@ -198,6 +207,11 @@ const STR = {
     newGame: '🗑 لعبة جديدة (يمسح ملاحظات اللوبي)',
     confirmNewGame: 'نبدأ لعبة جديدة؟ كل الجولات والكلمات والملاحظات بتنمسح للفريقين.',
     confirmNewGame2: 'متأكد؟ ما ينفع تتراجع.',
+    connLost: '⚠️ انقطع الاتصال — نعيد المحاولة…',
+    removedFromLobby: 'انطلعت من اللوبي (انطردت أو انحذف اللوبي).',
+    ownerTag: 'صاحب اللوبي', bannedTitle: 'المطرودين', allowBack: 'رجّعه',
+    claimFirst: 'استلم دور المشفّر عشان تعطي تلميحات.',
+    encryptorTyping: 'التلميحات تطلع هنا أول ما يرسلها المشفّر.',
     submitBtn: 'إرسال', submittedLine: c => `المرسل: ${c}`,
     draftTag: '✍️ مسودة — ما انرسلت بعد (ما يشوفها غيرك)',
     nothingSubmitted: 'ما انرسل شي بعد',
@@ -213,7 +227,7 @@ const STR = {
   }
 };
 
-let lang = localStorage.getItem('dcy-lang') ||
+let lang = lsGet('dcy-lang') ||
   ((navigator.language || '').toLowerCase().startsWith('ar') ? 'ar' : 'en');
 
 function t(key, ...args) {
@@ -228,29 +242,41 @@ applyLang();
 
 // ---------- state ----------
 let view = null;
-let tab = localStorage.getItem('dcy-tab') || 'round';
+let tab = lsGet('dcy-tab') || 'round';
 let pendingRender = false;
 let joinTeam = null;
-let joinName = localStorage.getItem('dcy-name') || '';
+let joinName = lsGet('dcy-name') || '';
 let lobbyName = '';
 let createMode = 'physical';
 let createTeamNames = { white: '', black: '' };
 let showSettings = false;
 
 const TEAMS = ['white', 'black'];
-const teamLabel = team => {
+const teamLabelPlain = team => {
   const custom = view && view.teamNames && view.teamNames[team];
-  if (custom) return `${team === 'white' ? '⚪' : '⚫'} ${esc(custom)}`;
+  if (custom) return `${team === 'white' ? '⚪' : '⚫'} ${custom}`;
   return team === 'white' ? t('teamWhite') : t('teamBlack');
 };
+const teamLabel = team => esc(teamLabelPlain(team));
 const otherTeam = team => (team === 'white' ? 'black' : 'white');
 const $app = document.getElementById('app');
 
 // ---------- server connection ----------
+let connected = true;
+let leavingOnPurpose = false;
 const es = new EventSource('/events?clientId=' + encodeURIComponent(clientId));
+es.onopen = () => { if (!connected) { connected = true; render(); } };
+es.onerror = () => { if (connected) { connected = false; render(); } };
 es.onmessage = e => {
-  view = JSON.parse(e.data);
+  let next;
+  try { next = JSON.parse(e.data); } catch (err) { return; }
+  const wasIn = view && view.you && view.you.lobby;
+  if (wasIn && !next.you.lobby && !leavingOnPurpose) toast(t('removedFromLobby'));
+  if (!next.you.lobby) leavingOnPurpose = false;
+  view = next;
+  connected = true;
   if (view.serverNow) clockOffset = view.serverNow - Date.now();
+  syncDrafts();
   render();
 };
 
@@ -374,52 +400,66 @@ function calcTokens(st) {
 }
 
 // ---------- clue drafts (local until submitted) ----------
-// drafts live in localStorage per lobby+round: typing never broadcasts;
-// the Submit button publishes clues (+ code in physical mode) in one shot.
+// Typing never broadcasts; Submit publishes clues (+ code in physical mode).
+// Each field remembers the server value it was last synced from ("base").
+// When someone else submits, fields you haven't touched follow the server;
+// fields you've edited stay yours. Without this, submitting a stale draft
+// would wipe clues a teammate had already submitted.
 let draftCache = null, draftCacheKey = '';
-function blankDraft() {
-  return {
-    white: { clues: ['', '', ''], code: [null, null, null] },
-    black: { clues: ['', '', ''], code: [null, null, null] }
-  };
-}
+const normClues = a => [0, 1, 2].map(i => ((a && a[i]) || '').trim());
+const normCode = c => (Array.isArray(c) ? [0, 1, 2].map(i => (c[i] == null ? null : c[i])) : [null, null, null]);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 function draftKey() { return `dcy-draft-${view.you.lobby.id}-${view.rounds.length - 1}`; }
+function serverSide(team) {
+  const r = view.rounds[view.rounds.length - 1][team];
+  return { clues: normClues(r.clues), code: normCode(r.code) };
+}
+function freshDraft() {
+  const d = {};
+  for (const team of TEAMS) {
+    const sv = serverSide(team);
+    d[team] = { clues: sv.clues.slice(), baseClues: sv.clues.slice(), code: sv.code.slice(), baseCode: sv.code.slice() };
+  }
+  return d;
+}
 function getDraft() {
   const k = draftKey();
   if (draftCacheKey !== k) {
     draftCacheKey = k;
     draftCache = null;
     try { draftCache = JSON.parse(localStorage.getItem(k)); } catch (e) {}
-    // clear stale drafts from finished rounds / other lobbies
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('dcy-draft-') && key !== k) localStorage.removeItem(key);
-    }
+    try {  // drop drafts from finished rounds / other lobbies
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('dcy-draft-') && key !== k) localStorage.removeItem(key);
+      }
+    } catch (e) {}
   }
-  if (!draftCache || !draftCache.white || !draftCache.black) {
-    draftCache = blankDraft();
-    // seed from what's already submitted so it's editable in place
-    const r = view.rounds[view.rounds.length - 1];
-    for (const team of TEAMS) {
-      draftCache[team].clues = r[team].clues.slice();
-      if (Array.isArray(r[team].code)) draftCache[team].code = r[team].code.slice();
-    }
-    saveDraft();
-  }
+  const valid = draftCache && TEAMS.every(team => draftCache[team] && Array.isArray(draftCache[team].baseClues));
+  if (!valid) { draftCache = freshDraft(); saveDraft(); }
   return draftCache;
 }
-function saveDraft() {
-  try { localStorage.setItem(draftKey(), JSON.stringify(draftCache)); } catch (e) {}
+function saveDraft() { lsSet(draftKey(), JSON.stringify(draftCache)); }
+
+function syncDrafts() {
+  if (!view || !view.you || !view.you.lobby || !view.you.team || !view.rounds) return;
+  const d = getDraft();
+  for (const team of TEAMS) {
+    const sv = serverSide(team), dt = d[team];
+    for (let i = 0; i < 3; i++) {
+      if (dt.clues[i] === dt.baseClues[i] || dt.clues[i].trim() === sv.clues[i]) dt.clues[i] = sv.clues[i];
+      dt.baseClues[i] = dt.clues[i] === sv.clues[i] ? sv.clues[i] : dt.baseClues[i];
+    }
+    // the code merges as a whole — mixing slots could produce a repeated digit
+    if (same(dt.code, dt.baseCode) || same(dt.code, sv.code)) { dt.code = sv.code.slice(); dt.baseCode = sv.code.slice(); }
+  }
+  saveDraft();
 }
 function draftDirty(team) {
-  const d = getDraft()[team];
-  const r = view.rounds[view.rounds.length - 1][team];
-  if (d.clues.some((c, i) => (c || '') !== (r.clues[i] || ''))) return true;
-  if (view.mode === 'physical') {
-    const oc = Array.isArray(r.code) ? r.code : [null, null, null];
-    if (d.code.some((c, i) => (c == null ? null : c) !== (oc[i] == null ? null : oc[i]))) return true;
-  }
-  return false;
+  const dt = getDraft()[team], sv = serverSide(team);
+  if (!same(normClues(dt.clues), sv.clues)) return true;
+  return view.mode === 'physical' && !same(dt.code, sv.code);
 }
 
 // clues a team has given, grouped into keyword columns 1-4
@@ -457,7 +497,8 @@ function render() {
   if (!view.you.name || !view.you.team) { $app.innerHTML = joinScreen(); return; }
 
   const tokens = calcTokens(view);
-  let html = header(tokens) + winBanner(tokens) + switchBanners() + timerBar();
+  let html = header(tokens) + (connected ? '' : `<div class="banner lose">${t('connLost')}</div>`) +
+    winBanner(tokens) + switchBanners() + timerBar();
   html += '<main>';
   if (tab === 'round') html += roundTab();
   else if (tab === 'enemy') html += enemyTab();
@@ -486,7 +527,7 @@ function lobbyScreen() {
         <div class="lobby-sub">${l.mode === 'physical' ? t('badgePhysical') : t('badgeDigital')} · ${t('lobbyMeta', l.round, online, l.players.length)}</div>
         <div class="chips" style="margin-top:6px">${names || `<span class="no-clues">${t('nobodyJoined')}</span>`}</div>
       </div>
-      <button class="lobby-del" data-action="dellobby" data-id="${esc(l.id)}" title="${t('delLobbyTitle')}">✕</button>
+      ${l.canDelete ? `<button class="lobby-del" data-action="dellobby" data-id="${esc(l.id)}" title="${t('delLobbyTitle')}">✕</button>` : ''}
     </div>`;
   }).join('');
   return `<div class="join">
@@ -504,9 +545,9 @@ function lobbyScreen() {
         ${t('modeDigital')}<br><span class="hint">${t('modeDigitalSub')}</span></button>
     </div>
     <div class="row" style="gap:8px;margin-top:-6px">
-      <input type="text" id="ctn-white" maxlength="20" placeholder="⚪ ${t('teamNamePh')}"
+      <input type="text" id="ctn-white" maxlength="20" placeholder="⚪ ${t('teamNameShort')}"
         value="${esc(createTeamNames.white)}" dir="auto" style="flex:1">
-      <input type="text" id="ctn-black" maxlength="20" placeholder="⚫ ${t('teamNamePh')}"
+      <input type="text" id="ctn-black" maxlength="20" placeholder="⚫ ${t('teamNameShort')}"
         value="${esc(createTeamNames.black)}" dir="auto" style="flex:1">
     </div>
     <div class="lobby-list">
@@ -517,6 +558,8 @@ function lobbyScreen() {
 
 // ---------- join ----------
 function joinScreen() {
+  const locked = view.you.formerTeam;   // server won't let you rejoin the other side
+  const pickedTeam = locked || joinTeam;
   const roster = team => {
     const ps = (view.players || []).filter(p => p.team === team);
     return ps.length
@@ -533,12 +576,12 @@ function joinScreen() {
     <input type="text" id="join-name" maxlength="24" placeholder="${t('yourName')}"
       value="${esc(joinName)}" dir="auto">
     <div class="team-pick">
-      <button class="white ${joinTeam === 'white' ? 'sel' : ''}" data-action="jointeam" data-team="white">${t('teamWhite')}</button>
-      <button class="black ${joinTeam === 'black' ? 'sel' : ''}" data-action="jointeam" data-team="black">${t('teamBlack')}</button>
+      <button class="white ${pickedTeam === 'white' ? 'sel' : ''}" data-action="jointeam" data-team="white" ${locked && locked !== 'white' ? 'disabled' : ''}>${teamLabel('white')}</button>
+      <button class="black ${pickedTeam === 'black' ? 'sel' : ''}" data-action="jointeam" data-team="black" ${locked && locked !== 'black' ? 'disabled' : ''}>${teamLabel('black')}</button>
     </div>
     <div class="roster-cols">
-      <div class="roster-col"><div class="lbl" style="margin-bottom:6px">${t('teamWhite')}</div><div class="chips">${roster('white')}</div></div>
-      <div class="roster-col"><div class="lbl" style="margin-bottom:6px">${t('teamBlack')}</div><div class="chips">${roster('black')}</div></div>
+      <div class="roster-col"><div class="lbl" style="margin-bottom:6px">${teamLabel('white')}</div><div class="chips">${roster('white')}</div></div>
+      <div class="roster-col"><div class="lbl" style="margin-bottom:6px">${teamLabel('black')}</div><div class="chips">${roster('black')}</div></div>
     </div>
     <button class="btn primary wide" data-action="join">${t('joinGame')}</button>
     <div class="hint" style="text-align:center">${t('privacyHint')}</div>
@@ -726,22 +769,30 @@ function myTransmission(tr, ri) {
       <span class="badge ${tr.code ? 'good' : ''}">${tr.code ? t('codeSetHidden') : t('waitingEncryptor')}</span></div>`;
   }
 
-  // clues — drafted locally, published on submit
-  const d = getDraft()[my];
-  const dirty = !tr.revealed && draftDirty(my);
+  // clues — the encryptor drafts locally and submits; teammates read along
   body += `<div class="row"><span class="lbl">${t('clues')}</span></div>`;
-  for (let i = 0; i < 3; i++) {
-    body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
-      <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${my}" data-i="${i}"
-        placeholder="${t('cluePh', i + 1)}" value="${esc(tr.revealed ? tr.clues[i] : d.clues[i])}" ${tr.revealed ? 'disabled' : ''}></div>`;
-  }
-  if (!tr.revealed) {
+  if (tr.encryptorIsYou && !tr.revealed) {
+    const d = getDraft()[my];
+    const dirty = draftDirty(my);
+    for (let i = 0; i < 3; i++) {
+      body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
+        <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${my}" data-i="${i}"
+          placeholder="${t('cluePh', i + 1)}" value="${esc(d.clues[i])}"></div>`;
+    }
     const submittedStr = tr.clues.some(c => c)
       ? tr.clues.map(c => esc(c || '·')).join(' / ')
       : t('nothingSubmitted');
     body += `<div class="row">
       <button class="btn ${dirty ? 'primary' : 'ghost'} wide" data-action="submitclues" data-team="${my}">${t('submitBtn')}</button></div>
     <div class="hint submitted-line" dir="auto">${t('submittedLine', submittedStr)}</div>`;
+  } else {
+    for (let i = 0; i < 3; i++) {
+      body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
+        <div class="clue-view" dir="auto">${esc(tr.clues[i])}</div></div>`;
+    }
+    if (!tr.revealed && !tr.clues.some(c => c)) {
+      body += `<div class="hint">${tr.encryptorName ? t('encryptorTyping') : t('claimFirst')}</div>`;
+    }
   }
 
   // team guess
@@ -759,7 +810,7 @@ function myTransmission(tr, ri) {
   } else {
     body += picker('own', Array.isArray(tr.ownGuess) ? tr.ownGuess : [null, null, null]);
     body += `<div class="row" style="margin-top:12px">
-      <button class="btn primary wide" data-action="reveal" ${tr.code ? '' : 'disabled'}>${t('reveal')}</button></div>
+      <button class="btn primary wide" data-action="reveal" ${tr.code && (tr.encryptorIsYou || !tr.encryptorName) ? '' : 'disabled'}>${t('reveal')}</button></div>
     <div class="hint">${t('revealHint')}</div>`;
   }
 
@@ -930,12 +981,10 @@ function settingsSheet() {
       }</div>
       <div class="hint">${t('switchHint')}</div>
       <h3>${t('teamsTitle')}</h3>
-      <div class="row"><span class="lbl">⚪</span>
-        <input type="text" maxlength="20" data-bind="teamname" data-team="white"
-          placeholder="${t('teamNamePh')}" value="${esc((view.teamNames || {}).white || '')}" dir="auto" style="flex:1"></div>
-      <div class="row"><span class="lbl">⚫</span>
-        <input type="text" maxlength="20" data-bind="teamname" data-team="black"
-          placeholder="${t('teamNamePh')}" value="${esc((view.teamNames || {}).black || '')}" dir="auto" style="flex:1"></div>
+      ${TEAMS.filter(tm => view.you.isOwner || tm === view.you.team).map(tm => `
+      <div class="row"><span class="lbl">${tm === 'white' ? '⚪' : '⚫'}</span>
+        <input type="text" maxlength="20" data-bind="teamname" data-team="${tm}"
+          placeholder="${t('teamNamePh')}" value="${esc((view.teamNames || {})[tm] || '')}" dir="auto" style="flex:1"></div>`).join('')}
       <h3>${t('langTitle')}</h3>
       <button class="btn wide" data-action="togglelang">🌐 ${t('langButton')}</button>
       <h3>${t('playersTitle')}</h3>
@@ -947,9 +996,14 @@ function settingsSheet() {
             ? `<button class="btn ghost kick-btn" data-action="kick" data-pid="${esc(p.pid)}" data-pname="${esc(p.name)}">${t('kickBtn')}</button>`
             : ''}</div>`).join('') || `<span class="dim">${t('nobodyYet')}</span>`}
       </div>
+      ${(view.banned || []).length ? `<h3>${t('bannedTitle')}</h3>
+      <div class="player-list">${view.banned.map(b => `
+        <div class="p">🚫 ${esc(b.name)}
+          <button class="btn ghost kick-btn" data-action="unban" data-pid="${esc(b.pid)}">${t('allowBack')}</button></div>`).join('')}
+      </div>` : ''}
       <h3>${t('lobbyTitle')}</h3>
       <button class="btn wide" data-action="leavelobby">${t('leaveLobby')}</button>
-      <button class="btn danger wide" data-action="newgame">${t('newGame')}</button>
+      ${view.you.isOwner ? `<button class="btn danger wide" data-action="newgame">${t('newGame')}</button>` : ''}
       <button class="btn wide" data-action="closesettings">${t('close')}</button>
     </div>
   </div>`;
@@ -966,7 +1020,7 @@ document.addEventListener('click', e => {
   switch (a.action) {
     case 'togglelang':
       lang = lang === 'ar' ? 'en' : 'ar';
-      localStorage.setItem('dcy-lang', lang);
+      lsSet('dcy-lang', lang);
       applyLang();
       render();
       break;
@@ -988,6 +1042,7 @@ document.addEventListener('click', e => {
       break;
     case 'leavelobby':
       if (view.you.name && !confirm(t('confirmLeave'))) return;
+      leavingOnPurpose = true;
       showSettings = false;
       joinTeam = null;
       send('leaveLobby');
@@ -999,14 +1054,15 @@ document.addEventListener('click', e => {
     case 'join': {
       const name = (joinName || document.getElementById('join-name').value || '').trim();
       if (!name) { toast(t('errName')); return; }
-      if (!joinTeam) { toast(t('errTeam')); return; }
-      localStorage.setItem('dcy-name', name);
-      send('join', { name, team: joinTeam });
+      const team = view.you.formerTeam || joinTeam;
+      if (!team) { toast(t('errTeam')); return; }
+      lsSet('dcy-name', name);
+      send('join', { name, team });
       break;
     }
     case 'tab':
       tab = a.tab;
-      localStorage.setItem('dcy-tab', tab);
+      lsSet('dcy-tab', tab);
       render();
       window.scrollTo(0, 0);
       break;
@@ -1031,6 +1087,9 @@ document.addEventListener('click', e => {
       send('submitClues', payload);
       break;
     }
+    case 'unban':
+      send('unbanPlayer', { pid: a.pid });
+      break;
     case 'kick':
       if (confirm(t('confirmKick', a.pname || '?'))) send('kickPlayer', { pid: a.pid });
       break;
@@ -1045,7 +1104,7 @@ document.addEventListener('click', e => {
       const r = view.rounds[view.rounds.length - 1];
       const missing = TEAMS.filter(team => !fullCode(r[team].code));
       const msg = missing.length
-        ? t('confirmNextMissing', missing.map(teamLabel).join(' & '))
+        ? t('confirmNextMissing', missing.map(teamLabelPlain).join(' & '))
         : t('confirmNext');
       if (confirm(msg)) send('nextRound');
       break;
@@ -1073,12 +1132,12 @@ document.addEventListener('click', e => {
       break;
     case 'savename': {
       const name = (document.getElementById('set-name').value || '').trim();
-      if (name) { localStorage.setItem('dcy-name', name); send('setName', { name }); }
+      if (name) { lsSet('dcy-name', name); send('setName', { name }); }
       showSettings = false;
       break;
     }
     case 'switchteam':
-      if (confirm(t('confirmSwitch', teamLabel(otherTeam(view.you.team))))) {
+      if (confirm(t('confirmSwitch', teamLabelPlain(otherTeam(view.you.team))))) {
         send('requestSwitch');
         showSettings = false;
       }

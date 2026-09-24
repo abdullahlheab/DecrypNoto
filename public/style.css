@@ -93,7 +93,7 @@ main { padding: 6px 14px 12px; display: flex; flex-direction: column; gap: 12px;
   font-size: .78rem; text-transform: uppercase; letter-spacing: .12em;
   color: var(--dim); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
 }
-.card h2 .spacer { margin-left: auto; }
+.card h2 .spacer { margin-inline-start: auto; }
 .team-tag { font-weight: 700; }
 .team-tag.white { color: var(--white-team); }
 .team-tag.black { color: var(--black-team); }
@@ -286,3 +286,4 @@ nav button.active { color: var(--accent); }
 
 .hint { font-size: .78rem; color: var(--dim); }
 .divider { border-top: 1px dashed var(--line); margin: 10px 0; }
+.team-pick button:disabled { opacity: .35; cursor: not-allowed; }

@@ -11,10 +11,12 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const PORT = process.env.PORT || 4321;
+const PORT = Number(process.env.PORT) || 4321;
 const PUB = path.join(__dirname, 'public');
 const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, 'game-state.json');
 const TEAMS = ['white', 'black'];
+const MAX_LOBBIES = 200;
+const TIMER_MS = 60000;
 
 // ---------- game state ----------
 function blankTeam() {
@@ -34,7 +36,7 @@ function blankRound() {
   }
   return r;
 }
-function rid() { return Math.random().toString(36).slice(2, 8); }
+function rid() { return crypto.randomBytes(5).toString('hex'); }
 function blankTokens() {
   return { white: { int: 0, mis: 0 }, black: { int: 0, mis: 0 } };
 }
@@ -44,7 +46,7 @@ function blankLobby(name, mode) {
     name,
     mode,                       // 'digital' (app draws/hides codes) | 'physical' (real cards, pure notes)
     createdAt: Date.now(),
-    owner: null,                // clientId of the creator — lobby admin
+    owner: null,                // clientId of the lobby admin
     players: {},                // clientId -> {name, team, notes}
     teams: { white: blankTeam(), black: blankTeam() },
     teamNames: { white: '', black: '' },  // custom display names, '' = default
@@ -53,29 +55,46 @@ function blankLobby(name, mode) {
     switchRequests: {},         // requestId -> {clientId, to, approvals: [clientId]}
     formerTeams: {},            // clientId -> last team, blocks leave-and-rejoin cheating
     formerNotes: {},            // clientId -> private notes kept across leave/rejoin
+    banned: {},                 // clientId -> name, kicked players can't re-enter
     timers: { white: null, black: null }  // pressure timers, keyed by the team being timed
   };
 }
+
+// Every lookup keyed by user input goes through own(): a plain `obj[key]`
+// with key "__proto__" / "constructor" returns inherited objects and used to
+// crash the server (and, once saved to disk, keep crashing it on restart).
+const own = (obj, key) => (obj && typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key)
+  ? obj[key] : undefined);
 
 let state = { lobbies: {}, clientLobby: {} };
 try {
   if (fs.existsSync(STATE_FILE)) {
     const loaded = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    if (loaded && loaded.lobbies) state = loaded;
+    if (loaded && loaded.lobbies && typeof loaded.lobbies === 'object') state = loaded;
   }
 } catch (e) {
   console.error('Could not load saved state, starting fresh:', e.message);
+  try { fs.copyFileSync(STATE_FILE, STATE_FILE + '.corrupt-' + Date.now()); } catch (e2) {}
 }
-for (const l of Object.values(state.lobbies)) {
+if (!state.clientLobby || typeof state.clientLobby !== 'object') state.clientLobby = {};
+for (const [id, l] of Object.entries(state.lobbies)) {
+  if (!l || typeof l !== 'object' || !Array.isArray(l.rounds)) { delete state.lobbies[id]; continue; }
   if (!l.mode) l.mode = 'digital';
+  if (!l.players) l.players = {};
   if (!l.tokens) l.tokens = blankTokens();
   if (!l.switchRequests) l.switchRequests = {};
   if (!l.formerTeams) l.formerTeams = {};
+  if (!l.formerNotes) l.formerNotes = {};
+  if (!l.banned) l.banned = {};
   if (!l.teamNames) l.teamNames = { white: '', black: '' };
   if (!l.timers) l.timers = { white: null, black: null };
-  if (l.owner === undefined) l.owner = null;
-  if (!l.formerNotes) l.formerNotes = {};
+  if (l.owner === undefined || (l.owner && !own(l.players, l.owner))) {
+    l.owner = Object.keys(l.players)[0] || null;
+  }
   for (const p of Object.values(l.players)) if (p.notes === undefined) p.notes = '';
+}
+for (const [cid, lid] of Object.entries(state.clientLobby)) {
+  if (!own(state.lobbies, lid)) delete state.clientLobby[cid];
 }
 
 // short public id for a client — lets the UI reference players (e.g. kick)
@@ -84,13 +103,23 @@ function pidOf(clientId) {
   return crypto.createHash('sha1').update(String(clientId)).digest('hex').slice(0, 8);
 }
 
+// atomic write: a crash mid-write must never leave a truncated state file
 function save() {
-  try { fs.writeFileSync(STATE_FILE, JSON.stringify(state)); }
-  catch (e) { console.error('save failed:', e.message); }
+  const tmp = STATE_FILE + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, STATE_FILE);
+  } catch (e) { console.error('save failed:', e.message); }
 }
 
 // ---------- helpers ----------
 const otherTeam = t => (t === 'white' ? 'black' : 'white');
+const CLIENT_ID_RE = /^(?!__proto__$)[A-Za-z0-9_-]{8,64}$/;
+
+// truncate by code point so emoji / Arabic never get split mid-character
+function text(s, max) {
+  return Array.from(String(s == null ? '' : s)).slice(0, max).join('');
+}
 
 function validCode(arr, allowPartial) {
   if (!Array.isArray(arr) || arr.length !== 3) return null;
@@ -100,18 +129,48 @@ function validCode(arr, allowPartial) {
     return Number.isInteger(n) && n >= 1 && n <= 4 ? n : NaN;
   });
   if (out.some(Number.isNaN)) return null;
-  if (!allowPartial && out.some(d => d === null)) return null;
-  if (out.every(d => d === null)) return null;
+  const digits = out.filter(d => d !== null);
+  if (new Set(digits).size !== digits.length) return null;   // codes never repeat a digit
+  if (!allowPartial && digits.length !== 3) return null;
+  if (digits.length === 0) return null;
   return out;
+}
+
+// a code from the client: blank → null (clear it); anything else must be valid
+function codeArg(v) {
+  const blank = !Array.isArray(v) || v.every(d => d == null || d === '');
+  if (blank) return { code: null };
+  const code = validCode(v, true);
+  return code ? { code } : { error: 'Invalid code — use digits 1-4 without repeats' };
 }
 
 function drawCode() {
   const digits = [1, 2, 3, 4];
   for (let i = digits.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = crypto.randomInt(i + 1);
     [digits[i], digits[j]] = [digits[j], digits[i]];
   }
   return digits.slice(0, 3);
+}
+
+function dropPlayer(lobby, cid) {
+  const p = own(lobby.players, cid);
+  if (!p) return;
+  lobby.formerTeams[cid] = p.team;
+  if (p.notes) lobby.formerNotes[cid] = p.notes;
+  delete lobby.players[cid];
+  for (const [id, q] of Object.entries(lobby.switchRequests)) {
+    if (q.clientId === cid) delete lobby.switchRequests[id];
+  }
+  // hand the crown to whoever's still here, so the lobby stays manageable
+  if (lobby.owner === cid) lobby.owner = Object.keys(lobby.players)[0] || null;
+}
+
+function clearEncryptorRoles(lobby, cid) {
+  const cur = lobby.rounds[lobby.rounds.length - 1];
+  for (const t of TEAMS) {
+    if (cur[t].encryptor === cid && !cur[t].revealed) cur[t].encryptor = null;
+  }
 }
 
 // ---------- per-client filtered view ----------
@@ -125,30 +184,33 @@ function onlineMembers(lobby, team) {
     state.clientLobby[cid] === lobby.id);
 }
 
-function lobbySummaries() {
+function lobbySummaries(clientId) {
   const onlineIds = new Set(sseClients.values());
-  return Object.values(state.lobbies).map(l => ({
-    id: l.id,
-    name: l.name,
-    mode: l.mode,
-    createdAt: l.createdAt,
-    round: l.rounds.length,
-    players: Object.entries(l.players).map(([id, p]) => ({
-      name: p.name, team: p.team,
-      online: onlineIds.has(id) && state.clientLobby[id] === l.id
-    }))
-  })).sort((a, b) => b.createdAt - a.createdAt);
+  return Object.values(state.lobbies).map(l => {
+    const count = Object.keys(l.players).length;
+    return {
+      id: l.id,
+      name: l.name,
+      mode: l.mode,
+      createdAt: l.createdAt,
+      round: l.rounds.length,
+      canDelete: count === 0 || !l.owner || l.owner === clientId,
+      players: Object.entries(l.players).map(([id, p]) => ({
+        name: p.name, team: p.team,
+        online: onlineIds.has(id) && state.clientLobby[id] === l.id
+      }))
+    };
+  }).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function viewFor(clientId) {
-  const lobbies = lobbySummaries();
-  const lobbyId = state.clientLobby[clientId];
-  const lobby = state.lobbies[lobbyId] || null;
+  const lobbies = lobbySummaries(clientId);
+  const lobby = own(state.lobbies, own(state.clientLobby, clientId)) || null;
   if (!lobby) {
     return { lobbies, you: { name: '', team: null, lobby: null } };
   }
 
-  const me = lobby.players[clientId] || null;
+  const me = own(lobby.players, clientId) || null;
   const myTeam = (me && me.team) || null;
   const v = JSON.parse(JSON.stringify({
     teams: lobby.teams,
@@ -166,7 +228,7 @@ function viewFor(clientId) {
   for (const t of TEAMS) {
     if (t !== myTeam) {
       const tm = v.teams[t];
-      tm.keywords = tm.keywords.map(k => (k ? 'hidden' : ''));
+      tm.keywords = ['', '', '', ''];
       tm.oppGuesses = ['', '', '', ''];
       tm.notes = '';
     }
@@ -179,7 +241,8 @@ function viewFor(clientId) {
     for (const t of TEAMS) {
       const tr = r[t];
       const enc = tr.encryptor;
-      tr.encryptorName = enc && lobby.players[enc] ? lobby.players[enc].name : null;
+      const encP = own(lobby.players, enc);
+      tr.encryptorName = encP ? encP.name : null;
       tr.encryptorIsYou = enc === clientId;
       delete tr.encryptor;
       if (lobby.mode !== 'physical' && !tr.revealed) {
@@ -201,7 +264,7 @@ function viewFor(clientId) {
   // pending team-switch requests: visible to the requester and the team
   // that has to approve (never leak requester clientIds — they're identity)
   v.switchRequests = Object.entries(lobby.switchRequests).map(([id, q]) => {
-    const p = lobby.players[q.clientId];
+    const p = own(lobby.players, q.clientId);
     return {
       id,
       name: p ? p.name : '?',
@@ -213,11 +276,17 @@ function viewFor(clientId) {
     };
   }).filter(r => r.yours || r.to === myTeam);
 
+  const isOwner = lobby.owner === clientId;
+  v.banned = isOwner
+    ? Object.entries(lobby.banned).map(([cid, name]) => ({ pid: pidOf(cid), name }))
+    : [];
+
   v.you = {
     name: me ? me.name : '',
     team: myTeam,
+    formerTeam: own(lobby.formerTeams, clientId) || null,
     notes: me ? (me.notes || '') : '',   // private — only ever sent to its owner
-    isOwner: lobby.owner === clientId,
+    isOwner,
     lobby: { id: lobby.id, name: lobby.name }
   };
   return v;
@@ -233,23 +302,23 @@ function broadcast() {
 // ---------- actions ----------
 function handleAction(clientId, body) {
   const type = body.type;
-  const lobbyId = state.clientLobby[clientId];
-  const lobby = state.lobbies[lobbyId] || null;
-  const me = lobby ? lobby.players[clientId] : null;
+  const lobby = own(state.lobbies, own(state.clientLobby, clientId)) || null;
+  const me = lobby ? own(lobby.players, clientId) || null : null;
   const myTeam = (me && me.team) || null;
   const cur = lobby ? lobby.rounds[lobby.rounds.length - 1] : null;
   const err = m => ({ error: m });
   const needTeam = () => (lobby && myTeam ? null : err('Join a team first'));
   const digitalOnly = () => (lobby && lobby.mode === 'physical' ? err('Not used in physical-cards mode') : null);
-  const text = (s, max) => String(s == null ? '' : s).slice(0, max);
+  const notRevealed = tr => (tr.revealed ? err('This round is already revealed') : null);
 
   switch (type) {
     case 'createLobby': {
       const name = text(body.name, 30).trim();
       if (!name) return err('Give the lobby a name');
+      if (Object.keys(state.lobbies).length >= MAX_LOBBIES) return err('Too many lobbies — delete an old one first');
       const l = blankLobby(name, body.mode === 'physical' ? 'physical' : 'digital');
       l.owner = clientId;
-      const tn = body.teamNames || {};
+      const tn = body.teamNames && typeof body.teamNames === 'object' ? body.teamNames : {};
       l.teamNames.white = text(tn.white, 20).trim();
       l.teamNames.black = text(tn.black, 20).trim();
       state.lobbies[l.id] = l;
@@ -257,34 +326,27 @@ function handleAction(clientId, body) {
       break;
     }
     case 'enterLobby': {
-      if (!state.lobbies[body.id]) return err('That lobby no longer exists');
-      state.clientLobby[clientId] = body.id;
+      const target = own(state.lobbies, body.id);
+      if (!target) return err('That lobby no longer exists');
+      if (own(target.banned, clientId) !== undefined) return err('You were removed from this lobby by its owner');
+      state.clientLobby[clientId] = target.id;
       break;
     }
     case 'leaveLobby': {
-      if (lobby) {
-        if (me) {
-          lobby.formerTeams[clientId] = me.team;
-          if (me.notes) lobby.formerNotes[clientId] = me.notes;
-        }
-        delete lobby.players[clientId];
-        for (const [id, q] of Object.entries(lobby.switchRequests)) {
-          if (q.clientId === clientId) delete lobby.switchRequests[id];
-        }
-      }
+      if (lobby) dropPlayer(lobby, clientId);
       delete state.clientLobby[clientId];
       break;
     }
     case 'deleteLobby': {
-      const l = state.lobbies[body.id];
+      const l = own(state.lobbies, body.id);
       if (!l) return err('That lobby no longer exists');
       // empty or ownerless lobbies: anyone may clean up. Otherwise owner only.
       if (Object.keys(l.players).length > 0 && l.owner && l.owner !== clientId) {
         return err('Only the lobby owner can delete a lobby that has players');
       }
-      delete state.lobbies[body.id];
+      delete state.lobbies[l.id];
       for (const cid of Object.keys(state.clientLobby)) {
-        if (state.clientLobby[cid] === body.id) delete state.clientLobby[cid];
+        if (state.clientLobby[cid] === l.id) delete state.clientLobby[cid];
       }
       break;
     }
@@ -292,20 +354,23 @@ function handleAction(clientId, body) {
       if (!lobby) return err('Enter a lobby first');
       const name = text(body.name, 24).trim();
       if (!name || !TEAMS.includes(body.team)) return err('Name and team required');
-      const former = lobby.formerTeams[clientId];
+      const former = own(lobby.formerTeams, clientId);
       if (former && former !== body.team) {
         return err(`You were on the ${former} team — rejoin it, then request a switch so the other team can approve`);
       }
-      const prev = lobby.players[clientId];
-      const notes = (prev && prev.notes) || lobby.formerNotes[clientId] || '';
+      const prev = own(lobby.players, clientId);
+      const notes = (prev && prev.notes) || own(lobby.formerNotes, clientId) || '';
       lobby.players[clientId] = { name, team: body.team, notes };
+      delete lobby.formerNotes[clientId];
       lobby.formerTeams[clientId] = body.team;
+      if (!lobby.owner) lobby.owner = clientId;
       break;
     }
     case 'setName': {
       if (!me) return err('Join first');
       const name = text(body.name, 24).trim();
-      if (name) me.name = name;
+      if (!name) return err('Name can’t be empty');
+      me.name = name;
       break;
     }
     case 'requestSwitch': {
@@ -316,6 +381,7 @@ function handleAction(clientId, body) {
       }
       // nobody from the target team online to approve → nothing to hide from
       if (onlineMembers(lobby, to).filter(c => c !== clientId).length === 0) {
+        clearEncryptorRoles(lobby, clientId);
         me.team = to;
         lobby.formerTeams[clientId] = to;
         break;
@@ -324,29 +390,34 @@ function handleAction(clientId, body) {
       break;
     }
     case 'cancelSwitch': {
-      for (const [id, q] of Object.entries(lobby ? lobby.switchRequests : {})) {
+      if (!lobby) return err('Enter a lobby first');
+      for (const [id, q] of Object.entries(lobby.switchRequests)) {
         if (q.clientId === clientId) delete lobby.switchRequests[id];
       }
       break;
     }
     case 'approveSwitch': {
       const e = needTeam(); if (e) return e;
-      const q = lobby.switchRequests[body.id];
+      const q = own(lobby.switchRequests, body.id);
       if (!q) return err('That request is gone');
       if (q.to !== myTeam) return err('Only the team being joined can approve');
       if (!q.approvals.includes(clientId)) q.approvals.push(clientId);
       const stillNeeded = onlineMembers(lobby, q.to)
         .filter(c => c !== q.clientId && !q.approvals.includes(c));
       if (stillNeeded.length === 0) {
-        const p = lobby.players[q.clientId];
-        if (p) { p.team = q.to; lobby.formerTeams[q.clientId] = q.to; }
+        const p = own(lobby.players, q.clientId);
+        if (p) {
+          clearEncryptorRoles(lobby, q.clientId);
+          p.team = q.to;
+          lobby.formerTeams[q.clientId] = q.to;
+        }
         delete lobby.switchRequests[body.id];
       }
       break;
     }
     case 'denySwitch': {
       const e = needTeam(); if (e) return e;
-      const q = lobby.switchRequests[body.id];
+      const q = own(lobby.switchRequests, body.id);
       if (!q) return err('That request is gone');
       if (q.to !== myTeam) return err('Only the team being joined can deny');
       delete lobby.switchRequests[body.id];
@@ -354,10 +425,7 @@ function handleAction(clientId, body) {
     }
     case 'newGame': {
       if (!lobby) return err('Enter a lobby first');
-      // owner decides — unless the owner isn't even a player here anymore
-      if (lobby.owner && lobby.players[lobby.owner] && lobby.owner !== clientId) {
-        return err('Only the lobby owner can start a new game');
-      }
+      if (lobby.owner && lobby.owner !== clientId) return err('Only the lobby owner can start a new game');
       lobby.teams = { white: blankTeam(), black: blankTeam() };
       lobby.rounds = [blankRound()];
       lobby.tokens = blankTokens();
@@ -380,7 +448,7 @@ function handleAction(clientId, body) {
       break;
     }
     case 'claimEncryptor': {
-      const e = needTeam() || digitalOnly(); if (e) return e;
+      const e = needTeam() || digitalOnly() || notRevealed(cur[myTeam]); if (e) return e;
       cur[myTeam].encryptor = clientId;
       break;
     }
@@ -393,51 +461,63 @@ function handleAction(clientId, body) {
       break;
     }
     case 'setCode': {
-      const e = needTeam(); if (e) return e;
-      if (lobby.mode === 'physical') {
-        // anyone at the table can record either team's revealed card
-        const t = TEAMS.includes(body.team) ? body.team : myTeam;
-        cur[t].code = validCode(body.code, true);
-        break;
-      }
+      // digital-mode encryptor only; physical codes go through submitClues
+      const e = needTeam() || digitalOnly(); if (e) return e;
       const tr = cur[myTeam];
       if (tr.encryptor !== clientId) return err('Only the encryptor handles the code');
-      tr.code = validCode(body.code, true);
-      break;
-    }
-    case 'setClue': {
-      const e = needTeam(); if (e) return e;
-      const i = body.index | 0;
-      if (i < 0 || i > 2) return err('Bad clue index');
-      // physical mode: anyone types what was said aloud, for either team
-      const t = lobby.mode === 'physical' && TEAMS.includes(body.team) ? body.team : myTeam;
-      cur[t].clues[i] = text(body.text, 80);
+      const e2 = notRevealed(tr); if (e2) return e2;
+      const c = codeArg(body.code); if (c.error) return err(c.error);
+      tr.code = c.code;
       break;
     }
     case 'setOwnGuess': {
-      const e = needTeam() || digitalOnly(); if (e) return e;
-      cur[myTeam].ownGuess = validCode(body.code, true);
+      const e = needTeam() || digitalOnly() || notRevealed(cur[myTeam]); if (e) return e;
+      const c = codeArg(body.code); if (c.error) return err(c.error);
+      cur[myTeam].ownGuess = c.code;
       break;
     }
     case 'setInterceptGuess': {
-      const e = needTeam() || digitalOnly(); if (e) return e;
-      cur[otherTeam(myTeam)].interceptGuess = validCode(body.code, true);
+      const opp = myTeam && otherTeam(myTeam);
+      const e = needTeam() || digitalOnly() || notRevealed(cur[opp]); if (e) return e;
+      const c = codeArg(body.code); if (c.error) return err(c.error);
+      cur[opp].interceptGuess = c.code;
       break;
     }
     case 'reveal': {
       const e = needTeam() || digitalOnly(); if (e) return e;
       const tr = cur[myTeam];
+      if (tr.encryptor && tr.encryptor !== clientId) return err('Only the encryptor can reveal');
       const full = validCode(tr.code, false);
       if (!full) return err('The encryptor must set a full 3-digit code first');
       tr.code = full;
       tr.revealed = true;
       break;
     }
+    case 'submitClues': {
+      const e = needTeam(); if (e) return e;
+      const isPhys = lobby.mode === 'physical';
+      // physical: anyone records either team's spoken clues; digital: your own only
+      const team = isPhys && TEAMS.includes(body.team) ? body.team : myTeam;
+      const tr = cur[team];
+      if (!isPhys) {
+        const e2 = notRevealed(tr); if (e2) return e2;
+        if (tr.encryptor !== clientId) return err('Only the encryptor gives the clues');
+      }
+      let code;
+      if (isPhys && body.code !== undefined) {
+        const c = codeArg(body.code); if (c.error) return err(c.error);
+        code = c.code;
+      }
+      const clues = Array.isArray(body.clues) ? body.clues : [];
+      for (let i = 0; i < 3; i++) tr.clues[i] = text(clues[i], 80).trim();
+      if (isPhys && body.code !== undefined) tr.code = code;
+      break;
+    }
     case 'startTimer': {
       const e = needTeam(); if (e) return e;
       const target = otherTeam(myTeam);
       if (lobby.timers[target]) return err('A timer is already running on them');
-      lobby.timers[target] = { endsAt: Date.now() + 60000, startedBy: me.name };
+      lobby.timers[target] = { endsAt: Date.now() + TIMER_MS, startedBy: me.name };
       break;
     }
     case 'stopTimer': {
@@ -464,34 +544,26 @@ function handleAction(clientId, body) {
     }
     case 'kickPlayer': {
       if (!lobby) return err('Enter a lobby first');
-      if (!lobby.owner || lobby.owner !== clientId) return err('Only the lobby owner can kick players');
+      if (lobby.owner !== clientId) return err('Only the lobby owner can kick players');
       const target = Object.keys(lobby.players).find(cid => pidOf(cid) === body.pid);
       if (!target) return err('Player not found');
       if (target === clientId) return err("You can't kick yourself");
-      lobby.formerTeams[target] = lobby.players[target].team;
-      if (lobby.players[target].notes) lobby.formerNotes[target] = lobby.players[target].notes;
-      delete lobby.players[target];
-      for (const [id, q] of Object.entries(lobby.switchRequests)) {
-        if (q.clientId === target) delete lobby.switchRequests[id];
-      }
+      lobby.banned[target] = lobby.players[target].name;
+      dropPlayer(lobby, target);
       delete state.clientLobby[target];
+      break;
+    }
+    case 'unbanPlayer': {
+      if (!lobby) return err('Enter a lobby first');
+      if (lobby.owner !== clientId) return err('Only the lobby owner can let players back in');
+      const target = Object.keys(lobby.banned).find(cid => pidOf(cid) === body.pid);
+      if (!target) return err('Player not found');
+      delete lobby.banned[target];
       break;
     }
     case 'setMyNotes': {
       if (!me) return err('Join first');
       me.notes = text(body.text, 4000);
-      break;
-    }
-    case 'submitClues': {
-      const e = needTeam(); if (e) return e;
-      const isPhys = lobby.mode === 'physical';
-      // physical: anyone records either team's spoken clues; digital: your own only
-      const team = isPhys && TEAMS.includes(body.team) ? body.team : myTeam;
-      const tr = cur[team];
-      if (!isPhys && tr.revealed) return err('Round already revealed');
-      const clues = Array.isArray(body.clues) ? body.clues : [];
-      for (let i = 0; i < 3; i++) tr.clues[i] = text(clues[i], 80);
-      if (isPhys && body.code !== undefined) tr.code = validCode(body.code, true);
       break;
     }
     case 'adjustToken': {
@@ -506,15 +578,15 @@ function handleAction(clientId, body) {
     }
     case 'setKeyword': {
       const e = needTeam(); if (e) return e;
-      const slot = body.slot | 0;
-      if (slot < 0 || slot > 3) return err('Bad slot');
+      const slot = Number(body.slot);
+      if (!Number.isInteger(slot) || slot < 0 || slot > 3) return err('Bad slot');
       lobby.teams[myTeam].keywords[slot] = text(body.text, 40);
       break;
     }
     case 'setOppGuess': {
       const e = needTeam(); if (e) return e;
-      const slot = body.slot | 0;
-      if (slot < 0 || slot > 3) return err('Bad slot');
+      const slot = Number(body.slot);
+      if (!Number.isInteger(slot) || slot < 0 || slot > 3) return err('Bad slot');
       lobby.teams[myTeam].oppGuesses[slot] = text(body.text, 40);
       break;
     }
@@ -524,7 +596,7 @@ function handleAction(clientId, body) {
       break;
     }
     default:
-      return err('Unknown action: ' + type);
+      return err('Unknown action');
   }
   save();
   broadcast();
@@ -540,16 +612,32 @@ const MIME = {
   '.png': 'image/png',
   '.json': 'application/json'
 };
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY',
+  'Content-Security-Policy':
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+};
+
+function sendJson(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+  res.end(JSON.stringify(obj));
+}
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
+  let url;
+  try { url = new URL(req.url, 'http://x'); }
+  catch (e) { res.writeHead(400); res.end(); return; }
 
   if (url.pathname === '/events') {
-    const clientId = url.searchParams.get('clientId') || '';
+    const raw = url.searchParams.get('clientId') || '';
+    const clientId = CLIENT_ID_RE.test(raw) ? raw : '';
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
     });
     res.write('retry: 2000\n\n');
     sseClients.set(res, clientId);
@@ -559,29 +647,53 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === '/api/action' && req.method === 'POST') {
+  if (url.pathname === '/api/action') {
+    if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST only' }); return; }
     let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 64 * 1024) req.destroy(); });
+    let tooBig = false;
+    req.setEncoding('utf8');
+    req.on('data', c => {
+      raw += c;
+      if (raw.length > 64 * 1024) { tooBig = true; raw = ''; }
+    });
     req.on('end', () => {
+      if (tooBig) { sendJson(res, 413, { error: 'Request too large' }); return; }
       let body;
-      try { body = JSON.parse(raw); }
-      catch (e) { res.writeHead(400); res.end('{"error":"bad json"}'); return; }
-      const result = handleAction(String(body.clientId || ''), body);
-      res.writeHead(result.error ? 400 : 200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      try { body = JSON.parse(raw); } catch (e) { body = null; }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        sendJson(res, 400, { error: 'Bad request' });
+        return;
+      }
+      if (typeof body.clientId !== 'string' || !CLIENT_ID_RE.test(body.clientId)) {
+        sendJson(res, 400, { error: 'Bad client id' });
+        return;
+      }
+      let result;
+      try { result = handleAction(body.clientId, body); }
+      catch (e) {
+        console.error('action failed:', body.type, e);
+        sendJson(res, 500, { error: 'Server error' });
+        return;
+      }
+      sendJson(res, result.error ? 400 : 200, result);
     });
     return;
   }
 
   // static files
+  if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
   let file = url.pathname === '/' ? '/index.html' : url.pathname;
-  file = path.normalize(file).replace(/^([.][.][\\/])+/, '');
-  const full = path.join(PUB, file);
-  if (!full.startsWith(PUB)) { res.writeHead(403); res.end(); return; }
+  try { file = decodeURIComponent(file); } catch (e) { res.writeHead(400); res.end(); return; }
+  const full = path.join(PUB, path.normalize(file));
+  if (!full.startsWith(PUB + path.sep)) { res.writeHead(403); res.end(); return; }
   fs.readFile(full, (e, data) => {
-    if (e) { res.writeHead(404); res.end('not found'); return; }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream' });
-    res.end(data);
+    if (e) { res.writeHead(404, SECURITY_HEADERS); res.end('not found'); return; }
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(full)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+      ...SECURITY_HEADERS
+    });
+    res.end(req.method === 'HEAD' ? undefined : data);
   });
 });
 
@@ -610,3 +722,5 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   console.log('\n  Everyone must be on the same Wi-Fi as this PC.\n');
 });
+
+module.exports = { server };

@@ -10,9 +10,9 @@ Built for the classic problem: taking Decrypto notes on your phone is miserable,
 - **Two game modes per lobby:**
   - 🃏 **Physical cards** (pure note-taking) — you play with the real box. No turns, no roles: anyone types the clues being said out loud, for either team. When a code card is revealed, anyone punches in the 3 digits — and every clue is instantly **auto-filed under the right keyword column**. Manual 🕵️/💥 token counters mirror the physical tokens.
   - 📱 **App codes** (full digital flow) — the app replaces the code cards. One teammate claims the **encryptor** role and draws a secret code only they can see, types the clues, both teams lock in guesses, then reveal auto-scores interception/miscommunication tokens and win/lose banners.
-- **Draft & submit clue entry** — clues (and codes in physical mode) are typed as a local draft and published with a **Submit** button, so nobody watches your half-typed words. Unsubmitted drafts show at the top of the Log tab, visible only to you.
+- **Draft & submit clue entry** — clues (and codes in physical mode) are typed as a local draft and published with a **Submit** button, so nobody watches your half-typed words. Unsubmitted drafts show at the top of the Log tab, visible only to you. If a teammate submits while you're mid-draft, the fields you haven't touched update to theirs, so your submit never wipes their work.
 - **The intercept sheet** — every enemy clue, grouped under word slots 1–4 with round tags, plus a hypothesis field per word and a shared team notepad. Your own sheet shows which clues *you've* already used per keyword, so you notice when you're being too predictable. There's also a **private per-player notepad** nobody else can see.
-- **Lobby owner** — the creator (👑) manages the lobby: only they can delete it while people are inside, start a new game, rename the other team, or **kick players**.
+- **Lobby owner** — the creator (👑) manages the lobby: only they can delete it while people are inside, start a new game, rename the other team, or **kick players**. A kicked player can't come back until the owner taps **Allow back**. If the owner leaves, the crown passes to someone still in the lobby. In app-codes mode only the encryptor can give clues and reveal, and codes and guesses are locked once revealed.
 - **Team secrets stay secret** — keywords, hypotheses, notes, unrevealed codes and guesses are filtered **server-side** per player. The other team can't peek, even in the network tab.
 - **Anti-cheat team switching** — switching teams requires every online member of the destination team to accept (they're about to show you their words). Leaving and rejoining on the other team is blocked too.
 - **English / Arabic** — 🌐 button toggles the whole UI, with proper RTL layout for Arabic. Per-device choice; clue text is direction-aware in both.
@@ -56,11 +56,19 @@ gives a throwaway public URL. Or add a public hostname on a named Cloudflare Tun
 ## How a round works (app-codes mode)
 
 1. One teammate taps **"I'm giving the clues"** — only they can see the code (🎲 draws a random one).
-2. They type the 3 clues; everyone sees them live.
+2. They type the 3 clues and hit **Submit**, and everyone sees them instantly.
 3. Your team taps in its decode guess; from round 2 the enemy taps in an intercept guess.
 4. **Reveal** — tokens are scored automatically (2 🕵️ interceptions wins, 2 💥 miscommunications loses) and the clues are filed into the keyword columns.
 
 In physical-cards mode steps 1–4 happen at the table; the app just captures clues + revealed codes and does the filing and token math.
+
+## Tests
+
+```
+npm test          # or: node test/e2e.js
+```
+
+A zero-dependency end-to-end suite (~200 checks, ~10s). It boots a real server on a random port with a throwaway state file, then plays as several simultaneous players over HTTP + live SSE connections. It covers lobbies, ownership, team secrecy, both game modes, switch approvals, kick/ban, timers, persistence across restarts, corrupt-save recovery and hostile input. It also loads the browser client in a sandbox to test the draft-merge and scoring logic.
 
 ## Tech
 

@@ -1,0 +1,15 @@
+{
+  "name": "decrypnoto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live shared note-taker for the board game Decrypto",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/e2e.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Unlicense"
+}
