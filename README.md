@@ -1,47 +1,109 @@
 # Decrypnoto 🔐
 
-A live, shared note-taker for the board game **Decrypto**. One person runs it; everyone else joins from their phone browser and takes notes together in real time — no installs, no accounts, no dependencies. Just Node.
+**A live, shared note sheet for the board game Decrypto.**
+One person runs the server. Everyone else opens it in their phone browser and takes notes together in real time. No installs, no accounts, no dependencies, just Node.
 
-Built for the classic problem: taking Decrypto notes on your phone is miserable, and half the game is remembering which clues the enemy gave for which keyword slot. Decrypnoto does that bookkeeping for you.
+<p align="center">
+  <img src="docs/screenshots/round.png" width="240" alt="Round tab: the encryptor's secret code and clues">
+  <img src="docs/screenshots/enemy-words.png" width="240" alt="Enemy words tab: intercepted clues grouped by keyword slot">
+  <img src="docs/screenshots/log.png" width="240" alt="Round log with codes, decodes and interceptions">
+</p>
 
-## Features
+Taking Decrypto notes on your phone is miserable, and half the game is remembering which clues the enemy gave for which keyword. Decrypnoto does that bookkeeping for you.
 
-- **Lobbies** — create a room, friends tap it from the lobby list and join a team. Each lobby is a fully independent game with a live roster (green dot = online right now). Several groups can play at once. Lobbies nobody has used for **3 days** delete themselves (configurable with the `LOBBY_TTL_MS` env var).
-- **Two game modes per lobby:**
-  - 🃏 **Physical cards** (pure note-taking) — you play with the real box. No turns, no roles: anyone types the clues being said out loud, for either team. When a code card is revealed, anyone punches in the 3 digits — and every clue is instantly **auto-filed under the right keyword column**. Manual 🕵️/💥 token counters mirror the physical tokens.
-  - 📱 **App codes** (full digital flow) — the app replaces the code cards. One teammate claims the **encryptor** role and draws a secret code only they can see, types the clues, both teams lock in guesses, then reveal auto-scores interception/miscommunication tokens and win/lose banners.
-- **Draft & submit clue entry** — clues (and codes in physical mode) are typed as a local draft and published with a **Submit** button, so nobody watches your half-typed words. Unsubmitted drafts show at the top of the Log tab, visible only to you. If a teammate submits while you're mid-draft, the fields you haven't touched update to theirs, so your submit never wipes their work.
-- **The intercept sheet** — every enemy clue, grouped under word slots 1–4 with round tags, plus a hypothesis field per word and a shared team notepad. Your own sheet shows which clues *you've* already used per keyword, so you notice when you're being too predictable. There's also a **private per-player notepad** nobody else can see.
-- **Lobby owner** — the creator (👑) manages the lobby: only they can delete it while people are inside, start a new game, rename the other team, or **kick players**. A kicked player can't come back until the owner taps **Allow back**. If the owner leaves, the crown passes to someone still in the lobby. In app-codes mode only the encryptor can give clues and reveal, and codes and guesses are locked once revealed.
-- **Team secrets stay secret** — keywords, hypotheses, notes, unrevealed codes and guesses are filtered **server-side** per player. The other team can't peek, even in the network tab.
-- **Anti-cheat team switching** — switching teams requires every online member of the destination team to accept (they're about to show you their words). Leaving and rejoining on the other team is blocked too.
-- **English / Arabic** — 🌐 button toggles the whole UI, with proper RTL layout for Arabic. Per-device choice; clue text is direction-aware in both.
-- **Live everything** — server-sent events push every change to every phone instantly. State persists to disk, so a server restart never loses a game.
+---
 
-## Run it
+## 🚀 Quick start
 
 ```
 node server.js
 ```
 
-No `npm install` — the server is a single zero-dependency file. It prints the addresses:
+That's it. No `npm install` is needed. The server prints two addresses:
 
 ```
 On this PC:   http://localhost:4321
 Friends join: http://192.168.x.x:4321
 ```
 
-Friends on the same Wi-Fi open that second URL. On Windows, allow Node through the firewall the first time (Private networks is enough).
+Friends on the same Wi-Fi open the second one.
 
-### Docker
+> 💡 On Windows, allow Node through the firewall the first time (Private networks is enough).
+
+---
+
+## 📸 Screenshots
+
+| Pick a lobby | Join a team | Your keywords |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/lobbies.png" width="240" alt="Lobby list"> | <img src="docs/screenshots/join.png" width="240" alt="Join screen"> | <img src="docs/screenshots/our-words.png" width="240" alt="Our words tab"> |
+| Create a room or tap one to join. Green dot = online now. | Pick a name and a team. The roster updates live. | Your secret words, plus every clue you've already used for each one. |
+
+| Give clues | Crack their words | Arabic + RTL |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/round.png" width="240" alt="Round tab"> | <img src="docs/screenshots/enemy-words.png" width="240" alt="Enemy words tab"> | <img src="docs/screenshots/arabic.png" width="240" alt="Arabic interface"> |
+| Only the encryptor sees the code. Clues are published with **Submit**. | Enemy clues get filed under slots 1–4 automatically. Add your guesses and team notes. | One tap switches the whole UI to Arabic with a right-to-left layout. |
+
+---
+
+## ✨ Features
+
+### Two ways to play
+
+| Mode | Best for | How it works |
+| --- | --- | --- |
+| 🃏 **Physical cards** | Playing with the real box | Pure note-taking with no turns or roles. Anyone types clues as they're said out loud. When a code card is revealed, punch in the 3 digits and every clue is **filed under the right keyword**. Token counters mirror the physical tokens. |
+| 📱 **App codes** | Playing without the code cards | The app draws secret codes, collects guesses from both teams and **scores tokens automatically**, including the win/lose banners. |
+
+### Notes that do the work
+
+- 🕵️ **Intercept sheet.** Every enemy clue is grouped by keyword slot and tagged with its round. Each slot has a guess field, and there's a shared team notepad.
+- 🔑 **Your own clue history.** See which clues your team already used for each keyword, so you notice when you're getting predictable.
+- 🔒 **Private notepad.** Each player gets a scratchpad that nobody else can see.
+- ✍️ **Draft, then submit.** Nobody watches your half-typed clues. If a teammate submits while you're drafting, fields you haven't touched update to theirs, so nothing gets overwritten.
+
+### Fair play built in
+
+- 🙈 **Team secrets stay secret.** Keywords, notes, codes and guesses are filtered **on the server** for each player. The other team can't peek, even in the browser's network tab.
+- 🔁 **Team switches need approval.** Every online member of the team you're joining must accept, since you're about to see their words. Leaving and rejoining on the other side is blocked too.
+- 👑 **Lobby owner controls.** The creator can start a new game, rename teams, kick players (and let them back in) and delete the lobby. If the owner leaves, the crown passes on.
+
+### Everything else
+
+- ⚡ **Live updates.** Every change reaches every phone instantly.
+- 💾 **Nothing gets lost.** State is saved to disk, so a server restart doesn't lose any games.
+- 🏠 **Many lobbies at once.** Several groups can play side by side. Lobbies unused for **3 days** delete themselves (change this with `LOBBY_TTL_MS`).
+- ⏱️ **1-minute pressure timer.** Start one on the other team when they're taking too long.
+- 🌐 **English / Arabic.** Each device picks its own language, with full right-to-left support.
+
+---
+
+## 🎲 How a round works (app-codes mode)
+
+1. **Claim the role.** One teammate taps **"I'm giving the clues"**. Only they see the code (🎲 draws a random one).
+2. **Give clues.** They type 3 clues and hit **Submit**. Everyone sees them instantly.
+3. **Guess.** Your team enters its decode guess. From round 2, the enemy enters an intercept guess.
+4. **Reveal.** Tokens are scored automatically: **2 🕵️ interceptions wins**, **2 💥 miscommunications loses**. The clues are filed into the keyword columns.
+
+In physical-cards mode these steps happen at the table. The app just captures the clues and revealed codes, then does the filing and token math.
+
+---
+
+## 🌍 Hosting options
+
+<details>
+<summary><b>🐳 Docker</b></summary>
 
 ```
 docker compose up -d --build
 ```
 
-Runs with `restart: unless-stopped`; game state lives in the `decrypnoto-data` volume (`STATE_FILE` env var controls the path).
+Runs with `restart: unless-stopped`. Game state lives in the `decrypnoto-data` volume (the `STATE_FILE` env var sets the path).
 
-### Playing with remote friends
+</details>
+
+<details>
+<summary><b>☁️ Playing with remote friends</b></summary>
 
 Any tunnel works. With Cloudflare:
 
@@ -49,29 +111,30 @@ Any tunnel works. With Cloudflare:
 cloudflared tunnel --url http://localhost:4321
 ```
 
-gives a throwaway public URL. Or add a public hostname on a named Cloudflare Tunnel pointing at `http://localhost:4321` (path empty) for a permanent one.
+This gives you a throwaway public URL. For a permanent one, add a public hostname on a named Cloudflare Tunnel pointing at `http://localhost:4321` (path empty).
 
-> ⚠️ The app is deliberately account-free, which means anyone with the URL can open your lobbies. Share the link privately.
+</details>
 
-## How a round works (app-codes mode)
+> ⚠️ There are no accounts, so **anyone with the URL can open your lobbies**. Share the link privately.
 
-1. One teammate taps **"I'm giving the clues"** — only they can see the code (🎲 draws a random one).
-2. They type the 3 clues and hit **Submit**, and everyone sees them instantly.
-3. Your team taps in its decode guess; from round 2 the enemy taps in an intercept guess.
-4. **Reveal** — tokens are scored automatically (2 🕵️ interceptions wins, 2 💥 miscommunications loses) and the clues are filed into the keyword columns.
+---
 
-In physical-cards mode steps 1–4 happen at the table; the app just captures clues + revealed codes and does the filing and token math.
-
-## Tests
+## 🧪 Tests
 
 ```
 npm test          # or: node test/e2e.js
 ```
 
-A zero-dependency end-to-end suite (~200 checks, ~10s). It boots a real server on a random port with a throwaway state file, then plays as several simultaneous players over HTTP + live SSE connections. It covers lobbies, ownership, team secrecy, both game modes, switch approvals, kick/ban, timers, persistence across restarts, corrupt-save recovery and hostile input. It also loads the browser client in a sandbox to test the draft-merge and scoring logic.
+A zero-dependency end-to-end suite with about 200 checks that runs in about 10 seconds. It starts a real server with a throwaway state file and plays as several players at once. It covers lobbies, ownership, team secrecy, both game modes, switch approvals, kicks and bans, timers, restarts, corrupt-save recovery and hostile input. It also tests the browser client's draft-merge and scoring logic.
 
-## Tech
+---
 
-- **Server:** one file, zero dependencies — Node HTTP + Server-Sent Events, JSON state file, per-client filtered views.
-- **Client:** vanilla JS single page, mobile-first, dark theme, i18n (en/ar) with RTL.
-- **State:** everything lives in `game-state.json` (or the Docker volume) — delete it for a factory reset.
+## 🛠 Tech
+
+| Part | What it is |
+| --- | --- |
+| **Server** | One file with zero dependencies: Node HTTP + Server-Sent Events, and a filtered view for each client |
+| **Client** | A vanilla JS single page. Mobile-first, dark theme, English/Arabic with RTL |
+| **State** | `game-state.json` (or the Docker volume). Delete it to reset everything |
+
+The screenshots in `docs/screenshots/` come from a demo game running on the real app.
