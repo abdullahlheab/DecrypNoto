@@ -6,10 +6,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/e2e.js"
+    "test": "node test/e2e.js",
+    "build": "esbuild client/viz.js --bundle --minify --format=iife --target=es2020 --legal-comments=eof --outfile=public/viz.js"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "Unlicense"
+  "license": "Unlicense",
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "three": "0.186.1"
+  }
 }

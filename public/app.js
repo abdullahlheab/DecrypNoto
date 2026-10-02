@@ -70,6 +70,7 @@ const STR = {
     checkEnemyTab: 'Check the <b>Enemy words</b> tab for their clue history.',
     startRound: n => `Start round ${n} ➜`,
     pos1: '1st', pos2: '2nd', pos3: '3rd',
+    keyDelete: 'Delete digit',
     // physical round tab
     ourTrans: 'our transmission', theirTrans: 'their transmission',
     typeAsSaid: "type them as they're said",
@@ -178,6 +179,7 @@ const STR = {
     checkEnemyTab: 'شوف تبويب <b>كلماتهم</b> لتاريخ تلميحاتهم.',
     startRound: n => `ابدأ الجولة ${n} ➜`,
     pos1: 'الأول', pos2: 'الثاني', pos3: 'الثالث',
+    keyDelete: 'امسح رقم',
     ourTrans: 'إرسالنا', theirTrans: 'إرسالهم',
     typeAsSaid: 'اكتبوها مثل ما تنقال',
     codeFromCard: 'من البطاقة، بعد الكشف',
@@ -250,6 +252,7 @@ let lobbyName = '';
 let createMode = 'physical';
 let createTeamNames = { white: '', black: '' };
 let showSettings = false;
+let tabSlide = '';        // 'next' / 'prev': slide the new tab in from that side
 
 const TEAMS = ['white', 'black'];
 const teamLabelPlain = team => {
@@ -320,6 +323,10 @@ function eqCode(a, b) {
 }
 function fullCode(a) { return Array.isArray(a) && a.length === 3 && a.every(d => d >= 1 && d <= 4); }
 function codeStr(c) { return Array.isArray(c) ? c.map(d => d == null ? '·' : d).join(' ') : ''; }
+// a code as little digit tiles (log tab)
+function digits(c) { return `<span class="digits">${normCode(c).map(d => `<i>${d == null ? '·' : d}</i>`).join('')}</span>`; }
+// a short tick on phones that can vibrate (Android; iOS ignores it)
+function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms || 8); } catch (e) {} }
 
 // ---------- pressure timer + alarm ----------
 // serverNow arrives with every state push; the offset corrects phone clock skew
@@ -482,9 +489,15 @@ function isTyping() {
   const a = document.activeElement;
   return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && $app.contains(a);
 }
+// the tab bar hides while the keyboard is up, so the inputs get the room
+document.addEventListener('focusin', () => {
+  if (isTyping()) document.body.classList.add('typing');
+});
 document.addEventListener('focusout', () => {
   setTimeout(() => {
-    if (pendingRender && !isTyping()) { pendingRender = false; render(); }
+    if (isTyping()) return;
+    document.body.classList.remove('typing');
+    if (pendingRender) { pendingRender = false; render(); }
   }, 80);
 });
 
@@ -493,13 +506,14 @@ function render() {
   if (!view) return;
   if (isTyping()) { pendingRender = true; return; }
 
-  if (!view.you.lobby) { $app.innerHTML = lobbyScreen(); return; }
-  if (!view.you.name || !view.you.team) { $app.innerHTML = joinScreen(); return; }
+  if (!view.you.lobby) { $app.innerHTML = lobbyScreen(); afterRender(); return; }
+  if (!view.you.name || !view.you.team) { $app.innerHTML = joinScreen(); afterRender(); return; }
 
   const tokens = calcTokens(view);
   let html = header(tokens) + (connected ? '' : `<div class="banner lose">${t('connLost')}</div>`) +
     winBanner(tokens) + switchBanners() + timerBar();
-  html += '<main>';
+  html += `<main${tabSlide ? ` class="slide-${tabSlide}"` : ''}>`;
+  tabSlide = '';
   if (tab === 'round') html += roundTab();
   else if (tab === 'enemy') html += enemyTab();
   else if (tab === 'ours') html += oursTab();
@@ -508,6 +522,12 @@ function render() {
   html += tabBar();
   if (showSettings) html += settingsSheet();
   $app.innerHTML = html;
+  afterRender();
+}
+
+// viz.js (three.js) lays its canvases into the fresh [data-viz] elements
+function afterRender() {
+  if (window.DcyViz) window.DcyViz.sync();
 }
 
 function langButton() {
@@ -532,6 +552,7 @@ function lobbyScreen() {
   }).join('');
   return `<div class="join">
     <div class="row" style="justify-content:flex-end">${langButton()}</div>
+    ${lock({ vid: 'hero', code: [4, 2, 3], size: 'hero' })}
     <div class="logo-big">DECRYPNOTO</div>
     <div class="sub">${t('subLobbies')}</div>
     <div class="row" style="gap:8px">
@@ -594,9 +615,8 @@ function header(tokens) {
   const my = view.you.team;
   const scores = TEAMS.map(team => `
     <div class="score ${team} ${team === my ? 'mine' : ''}">
-      <span class="tname">${teamLabel(team)}</span>
-      <span class="tok">🕵️ <b>${tokens[team].int}</b></span>
-      <span class="tok">💥 <b>${tokens[team].mis}</b></span>
+      <span class="tname" dir="auto">${teamLabel(team)}</span>
+      ${coins(team, tokens[team])}
     </div>`).join('');
   const online = (view.players || []).filter(p => p.online).length;
   return `<header>
@@ -608,6 +628,15 @@ function header(tokens) {
     </div>
     <div class="scorebar">${scores}</div>
   </header>`;
+}
+
+// token slots: 2 🕵️ wins, 2 💥 loses — 3D coins drop in via viz.js
+function coins(team, tk) {
+  const row = (n, ico) => [0, 1].map(i => `<i class="${i < n ? 'on' : ''}">${ico}</i>`).join('');
+  const more = tk.int > 2 || tk.mis > 2 ? `<span class="tok-more">${tk.int}·${tk.mis}</span>` : '';
+  return `<span class="coins" data-viz="coins" data-vid="coins-${team}" data-int="${tk.int}" data-mis="${tk.mis}"
+      role="img" aria-label="🕵️ ${tk.int} · 💥 ${tk.mis}">
+      <span class="coin-fb">${row(tk.int, '🕵️')}<span class="coin-gap"></span>${row(tk.mis, '💥')}</span></span>${more}`;
 }
 
 function winBanner(tokens) {
@@ -701,17 +730,13 @@ function physicalRoundTab() {
     const d = draft[team];
     const dirty = draftDirty(team);
     let body = `<div class="row"><span class="lbl">${t('clues')}</span><span class="hint">${t('typeAsSaid')}</span></div>`;
-    for (let i = 0; i < 3; i++) {
-      body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
-        <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${team}" data-i="${i}"
-          placeholder="${t('cluePh', i + 1)}" value="${esc(d.clues[i])}"></div>`;
-    }
+    for (let i = 0; i < 3; i++) body += clueInput(team, i, d.clues[i]);
     body += `<div class="divider"></div>
       <div class="row"><span class="lbl">${t('code')}</span>
         ${filed
           ? `<span class="badge good">${t('filed')}</span>`
           : `<span class="hint">${t('codeFromCard')}</span>`}</div>`;
-    body += picker('pcode', d.code, team);
+    body += lock({ vid: `pcode-${team}`, code: d.code, kind: 'pcode', team });
     const submittedStr = tr.clues.some(c => c) || Array.isArray(tr.code)
       ? `${tr.clues.map(c => esc(c || '·')).join(' / ')}${Array.isArray(tr.code) ? ' — ' + codeStr(tr.code) : ''}`
       : t('nothingSubmitted');
@@ -742,6 +767,13 @@ function physicalRoundTab() {
   return html;
 }
 
+function clueInput(team, i, value) {
+  return `<div class="clue-row"><span class="clue-num">${i + 1}</span>
+    <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${team}" data-i="${i}"
+      enterkeyhint="${i < 2 ? 'next' : 'done'}" autocomplete="off"
+      placeholder="${t('cluePh', i + 1)}" value="${esc(value)}"></div>`;
+}
+
 function myTransmission(tr, ri) {
   const my = view.you.team;
   let body = '';
@@ -757,17 +789,19 @@ function myTransmission(tr, ri) {
       <button class="btn" data-action="claim">${t('imEncryptor')}</button></div>`;
   }
 
-  // code
+  // code — the same lock throughout, so the reveal spins it open
   if (tr.revealed) {
-    body += `<div class="row"><span class="lbl">${t('code')}</span><span class="code-display">${codeStr(tr.code)}</span></div>`;
+    body += `<div class="row"><span class="lbl">${t('code')}</span></div>`;
+    body += lock({ vid: 'code-mine', code: tr.code });
   } else if (tr.encryptorIsYou) {
     body += `<div class="row"><span class="lbl">${t('code')}</span>
       <button class="btn" data-action="draw">${t('drawRandom')}</button>
       <span class="hint">${t('onlyYou')}</span></div>`;
-    body += picker('code', Array.isArray(tr.code) ? tr.code : [null, null, null]);
+    body += lock({ vid: 'code-mine', code: tr.code, kind: 'code' });
   } else {
     body += `<div class="row"><span class="lbl">${t('code')}</span>
       <span class="badge ${tr.code ? 'good' : ''}">${tr.code ? t('codeSetHidden') : t('waitingEncryptor')}</span></div>`;
+    body += lock({ vid: 'code-mine', code: null, hidden: !!tr.code, size: 'sm' });
   }
 
   // clues — the encryptor drafts locally and submits; teammates read along
@@ -775,11 +809,7 @@ function myTransmission(tr, ri) {
   if (tr.encryptorIsYou && !tr.revealed) {
     const d = getDraft()[my];
     const dirty = draftDirty(my);
-    for (let i = 0; i < 3; i++) {
-      body += `<div class="clue-row"><span class="clue-num">${i + 1}</span>
-        <input type="text" dir="auto" maxlength="80" data-bind="draftclue" data-team="${my}" data-i="${i}"
-          placeholder="${t('cluePh', i + 1)}" value="${esc(d.clues[i])}"></div>`;
-    }
+    for (let i = 0; i < 3; i++) body += clueInput(my, i, d.clues[i]);
     const submittedStr = tr.clues.some(c => c)
       ? tr.clues.map(c => esc(c || '·')).join(' / ')
       : t('nothingSubmitted');
@@ -802,14 +832,15 @@ function myTransmission(tr, ri) {
   if (tr.revealed) {
     const g = tr.ownGuess;
     const ok = eqCode(g, tr.code);
-    body += `<div class="row"><span class="code-display" style="color:${ok ? 'var(--accent)' : 'var(--danger)'}">${g ? codeStr(g) : '—'}</span>
+    body += lock({ vid: 'guess-mine', code: g, tint: matchTint(g, tr.code), delay: REVEAL_DELAY });
+    body += `<div class="row">
       ${Array.isArray(g) ? `<span class="badge ${ok ? 'good' : 'bad'}">${ok ? t('decoded') : t('miscomm')}</span>` : `<span class="badge warn">${t('noGuess')}</span>`}</div>`;
     if (ri > 0 && Array.isArray(tr.interceptGuess)) {
       const got = eqCode(tr.interceptGuess, tr.code);
       body += `<div class="row"><span class="badge ${got ? 'bad' : 'good'}">${got ? t('interceptedBy', codeStr(tr.interceptGuess)) : t('safeGuess', codeStr(tr.interceptGuess))}</span></div>`;
     }
   } else {
-    body += picker('own', Array.isArray(tr.ownGuess) ? tr.ownGuess : [null, null, null]);
+    body += lock({ vid: 'guess-mine', code: tr.ownGuess, kind: 'own' });
     body += `<div class="row" style="margin-top:12px">
       <button class="btn primary wide" data-action="reveal" ${tr.code && (tr.encryptorIsYou || !tr.encryptorName) ? '' : 'disabled'}>${t('reveal')}</button></div>
     <div class="hint">${t('revealHint')}</div>`;
@@ -831,42 +862,99 @@ function enemyTransmission(tr, ri) {
       <div class="clue-view" dir="auto">${esc(tr.clues[i])}</div></div>`;
   }
 
+  // their code: a closed lock until they reveal, then it spins open
+  body += `<div class="divider"></div><div class="row"><span class="lbl">${t('theirCode')}</span></div>`;
   if (tr.revealed) {
-    body += `<div class="divider"></div>
-      <div class="row"><span class="lbl">${t('theirCode')}</span><span class="code-display">${codeStr(tr.code)}</span></div>`;
+    body += lock({ vid: 'code-theirs', code: tr.code });
     if (ri > 0 && Array.isArray(tr.interceptGuess)) {
       const got = eqCode(tr.interceptGuess, tr.code);
+      body += `<div class="row"><span class="lbl">${t('intercept')}</span></div>`;
+      body += lock({ vid: 'guess-int', code: tr.interceptGuess, tint: matchTint(tr.interceptGuess, tr.code), delay: REVEAL_DELAY });
       body += `<div class="row"><span class="badge ${got ? 'good' : ''}">${got ? t('weIntercepted') : t('interceptMissedOur', codeStr(tr.interceptGuess))}</span></div>`;
     }
     const ok = eqCode(tr.ownGuess, tr.code);
     if (Array.isArray(tr.ownGuess)) {
       body += `<div class="row"><span class="badge ${ok ? '' : 'warn'}">${ok ? t('theyDecoded') : t('theyMiscommed')}</span></div>`;
     }
-  } else if (ri === 0) {
-    body += `<div class="divider"></div><div class="hint">${t('round1Note')}</div>`;
   } else {
-    body += `<div class="divider"></div>
-      <div class="row"><span class="lbl">${t('intercept')}</span><span class="hint">${t('interceptHint')}</span></div>`;
-    body += picker('int', Array.isArray(tr.interceptGuess) ? tr.interceptGuess : [null, null, null]);
-    body += `<div class="hint" style="margin-top:8px">${t('checkEnemyTab')}</div>`;
+    body += lock({ vid: 'code-theirs', code: null, hidden: !!tr.code, size: 'sm' });
+    if (ri === 0) {
+      body += `<div class="hint">${t('round1Note')}</div>`;
+    } else {
+      body += `<div class="row"><span class="lbl">${t('intercept')}</span><span class="hint">${t('interceptHint')}</span></div>`;
+      body += lock({ vid: 'guess-int', code: tr.interceptGuess, kind: 'int' });
+      body += `<div class="hint" style="margin-top:8px">${t('checkEnemyTab')}</div>`;
+    }
   }
 
   return `<div class="card"><h2><span class="team-tag ${opp}">${teamLabel(opp)}</span> — ${t('enemyTransmission')}</h2>${body}</div>`;
 }
 
-function picker(kind, code, team) {
+// ---------- code lock ----------
+// Every code is a row of three drums: plain digit tiles in HTML, turned into
+// a 3D cipher lock by viz.js. Editable locks get a keypad: tap the digits in
+// order like a PIN; tap a drum first to change just that digit.
+const REVEAL_DELAY = 1150;  // guess drums light up once the code lock lands
+const lockCursor = {};      // drum the user tapped, per lock
+const lockKey = (kind, team) => `${kind}:${team || ''}:${view.rounds.length}`;
+
+function lock({ vid, code, kind, team, hidden, tint, delay, size }) {
+  const c = normCode(code);
+  const faces = c.map(d => (hidden ? 5 : d || 0));      // 0 blank, 1-4, 5 hidden
+  const cursor = kind ? lockCursor[lockKey(kind, team)] : null;
+  const active = kind ? (cursor != null ? cursor : c.indexOf(null)) : -1;
   const POS = [t('pos1'), t('pos2'), t('pos3')];
   const teamAttr = team ? ` data-team="${team}"` : '';
-  let html = '<div class="picker">';
-  for (let slot = 0; slot < 3; slot++) {
-    html += `<div class="pick-row"><span class="pick-pos">${POS[slot]}</span>`;
+  const drums = faces.map((f, i) => {
+    const label = f === 5 ? '?' : (f || '');
+    const cls = `drum${i === active ? ' on' : ''}${tint ? ' t-' + tint[i] : ''}`;
+    return kind
+      ? `<button class="${cls}" data-action="drum" data-kind="${kind}" data-slot="${i}"${teamAttr}
+          aria-label="${POS[i]}: ${label || '–'}"><b>${label}</b></button>`
+      : `<span class="${cls}"><b>${label}</b></span>`;
+  }).join('');
+  let html = `<div class="lock${size ? ' ' + size : ''}" data-viz="lock" data-vid="${vid}" data-faces="${faces}"${
+    tint ? ` data-tint="${tint}"` : ''}${delay ? ` data-delay="${delay}"` : ''}><div class="drums">${drums}</div></div>`;
+  if (kind) {
+    const full = !c.includes(null);
+    html += '<div class="keypad">';
     for (let d = 1; d <= 4; d++) {
-      html += `<button data-action="pick" data-kind="${kind}" data-slot="${slot}" data-digit="${d}"${teamAttr}
-        class="${code[slot] === d ? 'sel' : ''}">${d}</button>`;
+      html += `<button class="${!full && cursor == null && c.includes(d) ? 'used' : ''}"
+        data-action="key" data-kind="${kind}" data-digit="${d}"${teamAttr}>${d}</button>`;
     }
-    html += '</div>';
+    html += `<button class="back" data-action="keyback" data-kind="${kind}"${teamAttr} aria-label="${t('keyDelete')}">⌫</button></div>`;
   }
-  return html + '</div>';
+  return html;
+}
+
+// per-drum result colours once a code is revealed: g right, r wrong, d no guess
+function matchTint(guess, code) {
+  const g = normCode(guess), c = normCode(code);
+  return g.map((d, i) => (d == null ? 'd' : d === c[i] ? 'g' : 'r'));
+}
+
+// keypad digit: fills the tapped drum, else the first empty one; on a full
+// code it starts a new one. Codes never repeat a digit, so a tapped drum takes
+// the digit from wherever it was, and an untargeted repeat is ignored.
+function keyInto(code, cursor, digit) {
+  const c = normCode(code);
+  let slot = cursor;
+  if (slot == null) {
+    slot = c.indexOf(null);
+    if (slot < 0) return [digit, null, null];
+    if (c.includes(digit)) return c;
+  }
+  for (let i = 0; i < 3; i++) if (i !== slot && c[i] === digit) c[i] = null;
+  c[slot] = digit;
+  return c;
+}
+// ⌫ clears the tapped drum, else the last digit entered
+function keyBack(code, cursor) {
+  const c = normCode(code);
+  let slot = cursor != null && c[cursor] != null ? cursor : -1;
+  for (let i = 2; slot < 0 && i >= 0; i--) if (c[i] != null) slot = i;
+  if (slot >= 0) c[slot] = null;
+  return c;
 }
 
 // ---------- enemy words tab ----------
@@ -880,6 +968,7 @@ function enemyTab() {
     html += `<div class="wordcol">
       <div class="wordcol-head"><span class="wordcol-num">${s + 1}</span>
         <input type="text" dir="auto" maxlength="40" data-bind="oppguess" data-i="${s}"
+          enterkeyhint="${s < 3 ? 'next' : 'done'}" autocomplete="off"
           placeholder="${t('theirWordPh', s + 1)}" value="${esc(guesses[s])}"></div>
       <div class="chips">${
         cols[s].length
@@ -909,6 +998,7 @@ function oursTab() {
     html += `<div class="wordcol">
       <div class="wordcol-head"><span class="wordcol-num">${s + 1}</span>
         <input type="text" dir="auto" maxlength="40" data-bind="keyword" data-i="${s}"
+          enterkeyhint="${s < 3 ? 'next' : 'done'}" autocomplete="off"
           placeholder="${t('keywordPh', s + 1)}" value="${esc(kws[s])}"></div>
       <div class="chips">${
         cols[s].length
@@ -933,10 +1023,10 @@ function logTab() {
       let meta = '';
       if (view.mode === 'physical') {
         meta = fullCode(tr.code)
-          ? `<span>${t('logCode')} <b class="mono">${codeStr(tr.code)}</b></span>`
+          ? `<span>${t('logCode')} ${digits(tr.code)}</span>`
           : `<span>${t('codeNotRecorded')}</span>`;
       } else if (tr.revealed) {
-        meta += `<span>${t('logCode')} <b class="mono">${codeStr(tr.code)}</b></span>`;
+        meta += `<span>${t('logCode')} ${digits(tr.code)}</span>`;
         if (Array.isArray(tr.ownGuess)) meta += `<span>${eqCode(tr.ownGuess, tr.code) ? t('logDecoded') : t('logMiscomm', codeStr(tr.ownGuess))}</span>`;
         if (i > 0 && Array.isArray(tr.interceptGuess)) meta += `<span>${eqCode(tr.interceptGuess, tr.code) ? t('logIntercepted') : t('logInterceptMissed')}</span>`;
       } else {
@@ -1062,10 +1152,7 @@ document.addEventListener('click', e => {
       break;
     }
     case 'tab':
-      tab = a.tab;
-      lsSet('dcy-tab', tab);
-      render();
-      window.scrollTo(0, 0);
+      goTab(a.tab);
       break;
     case 'claim':
       if (a.confirm && !confirm(t('confirmTakeOver'))) return;
@@ -1074,9 +1161,37 @@ document.addEventListener('click', e => {
     case 'draw':
       send('drawCode');
       break;
-    case 'pick':
-      handlePick(a.kind, Number(a.slot), Number(a.digit), a.team);
+    case 'drum': {
+      // tap a drum to aim the keypad at it; tap it again to clear it
+      const key = lockKey(a.kind, a.team), slot = Number(a.slot);
+      if (lockCursor[key] === slot) {
+        const acc = codeAccess(a.kind, a.team);
+        if (acc.cur[slot] != null) acc.set(keyBack(acc.cur, slot));
+      } else {
+        lockCursor[key] = slot;
+      }
+      buzz();
+      render();
       break;
+    }
+    case 'key': {
+      const key = lockKey(a.kind, a.team);
+      const acc = codeAccess(a.kind, a.team);
+      const next = keyInto(acc.cur, lockCursor[key], Number(a.digit));
+      delete lockCursor[key];
+      if (!same(next, acc.cur)) acc.set(next);
+      buzz();
+      render();
+      break;
+    }
+    case 'keyback': {
+      const acc = codeAccess(a.kind, a.team);
+      const next = keyBack(acc.cur, lockCursor[lockKey(a.kind, a.team)]);
+      if (!same(next, acc.cur)) acc.set(next);
+      buzz();
+      render();
+      break;
+    }
     case 'tok':
       send('adjustToken', { team: a.team, kind: a.kind, delta: Number(a.delta) });
       break;
@@ -1162,38 +1277,35 @@ document.addEventListener('click', e => {
   }
 });
 
-function handlePick(kind, slot, digit, team) {
+// the code a lock edits, and how to store a new value
+function codeAccess(kind, team) {
   const my = view.you.team;
-  const ri = view.rounds.length - 1;
-  const r = view.rounds[ri];
-  let cur, sendIt;
+  const r = view.rounds[view.rounds.length - 1];
   if (kind === 'pcode') {
     // physical-mode code digits are part of the draft — published on submit
     const tm = team === 'white' || team === 'black' ? team : my;
     const d = getDraft();
-    cur = d[tm].code.slice();
-    sendIt = code => { d[tm].code = code; saveDraft(); };
-  } else if (kind === 'code') {
-    cur = Array.isArray(r[my].code) ? r[my].code.slice() : [null, null, null];
-    sendIt = code => { r[my].code = code; send('setCode', { code }); };
-  } else if (kind === 'own') {
-    cur = Array.isArray(r[my].ownGuess) ? r[my].ownGuess.slice() : [null, null, null];
-    sendIt = code => { r[my].ownGuess = code; send('setOwnGuess', { code }); };
-  } else {
-    const opp = otherTeam(my);
-    cur = Array.isArray(r[opp].interceptGuess) ? r[opp].interceptGuess.slice() : [null, null, null];
-    sendIt = code => { r[opp].interceptGuess = code; send('setInterceptGuess', { code }); };
+    return { cur: d[tm].code.slice(), set: code => { d[tm].code = code; saveDraft(); } };
   }
-  // tap the selected digit again to clear it
-  if (cur[slot] === digit) {
-    cur[slot] = null;
-  } else {
-    // codes never repeat a digit — clear it from any other slot
-    for (let i = 0; i < 3; i++) if (i !== slot && cur[i] === digit) cur[i] = null;
-    cur[slot] = digit;
+  if (kind === 'code') {
+    return { cur: normCode(r[my].code), set: code => { r[my].code = code; send('setCode', { code }); } };
   }
-  sendIt(cur);
+  if (kind === 'own') {
+    return { cur: normCode(r[my].ownGuess), set: code => { r[my].ownGuess = code; send('setOwnGuess', { code }); } };
+  }
+  const opp = otherTeam(my);
+  return { cur: normCode(r[opp].interceptGuess), set: code => { r[opp].interceptGuess = code; send('setInterceptGuess', { code }); } };
+}
+
+function goTab(next, dir) {
+  if (next === tab) return;
+  const order = TABS.map(x => x.id);
+  tabSlide = (dir || order.indexOf(next) - order.indexOf(tab)) > 0 ? 'next' : 'prev';
+  tab = next;
+  lsSet('dcy-tab', tab);
+  buzz(6);
   render();
+  window.scrollTo(0, 0);
 }
 
 document.addEventListener('input', e => {
@@ -1231,15 +1343,48 @@ document.addEventListener('input', e => {
   }
 });
 
-// ---------- tab bar ----------
+// ---------- tab bar + swipe between tabs ----------
+const TABS = [
+  { id: 'round', ico: '🎙️', label: 'tabRound' },
+  { id: 'enemy', ico: '🕵️', label: 'tabEnemy' },
+  { id: 'ours', ico: '🔑', label: 'tabOurs' },
+  { id: 'log', ico: '📜', label: 'tabLog' }
+];
 function tabBar() {
-  const tb = (id, ico, label) => `
-    <button class="${tab === id ? 'active' : ''}" data-action="tab" data-tab="${id}">
-      <span class="ico">${ico}</span>${label}</button>`;
-  return `<nav><div class="nav-inner">
-    ${tb('round', '🎙️', t('tabRound'))}
-    ${tb('enemy', '🕵️', t('tabEnemy'))}
-    ${tb('ours', '🔑', t('tabOurs'))}
-    ${tb('log', '📜', t('tabLog'))}
+  return `<nav><div class="nav-inner">${TABS.map(x => `
+    <button class="${tab === x.id ? 'active' : ''}" data-action="tab" data-tab="${x.id}">
+      <span class="ico">${x.ico}</span>${t(x.label)}</button>`).join('')}
   </div></nav>`;
 }
+
+// a quick sideways flick anywhere outside the inputs and locks changes tab
+let swipe = null;
+document.addEventListener('touchstart', e => {
+  swipe = null;
+  if (e.touches.length !== 1 || !view || !view.you || !view.you.team || showSettings || isTyping()) return;
+  if (e.target.closest('input, textarea, .lock, .keypad, header, nav, .overlay')) return;
+  swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, at: Date.now() };
+}, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!swipe) return;
+  const p = e.changedTouches[0];
+  const dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
+  const quick = Date.now() - swipe.at < 700;
+  swipe = null;
+  if (!quick || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return;
+  const dir = (dx < 0 ? 1 : -1) * (lang === 'ar' ? -1 : 1);   // RTL mirrors the tab order
+  const order = TABS.map(x => x.id);
+  const next = order[order.indexOf(tab) + dir];
+  if (next) goTab(next, dir);
+}, { passive: true });
+
+// Enter in a clue / keyword field jumps to the next one, like a form
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  const b = el && el.dataset && el.dataset.bind;
+  if (e.key !== 'Enter' || !['draftclue', 'keyword', 'oppguess'].includes(b)) return;
+  e.preventDefault();
+  const team = el.dataset.team ? `[data-team="${el.dataset.team}"]` : '';
+  const next = $app.querySelector(`[data-bind="${b}"]${team}[data-i="${Number(el.dataset.i) + 1}"]`);
+  if (next) next.focus(); else el.blur();
+});

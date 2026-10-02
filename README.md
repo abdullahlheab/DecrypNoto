@@ -4,8 +4,8 @@
 One person runs the server. Everyone else opens it in their phone browser and takes notes together in real time. No installs, no accounts, no dependencies, just Node.
 
 <p align="center">
-  <img src="docs/screenshots/round.png" width="240" alt="Round tab: the encryptor's secret code and clues">
-  <img src="docs/screenshots/enemy-words.png" width="240" alt="Enemy words tab: intercepted clues grouped by keyword slot">
+  <img src="docs/screenshots/round.png" width="240" alt="Round tab: the encryptor's secret code on a 3D cipher lock, with a keypad">
+  <img src="docs/screenshots/reveal.png" width="240" alt="Reveal: the code lock spun open, the guess drums lit green and red">
   <img src="docs/screenshots/log.png" width="240" alt="Round log with codes, decodes and interceptions">
 </p>
 
@@ -39,10 +39,15 @@ Friends on the same Wi-Fi open the second one.
 | <img src="docs/screenshots/lobbies.png" width="240" alt="Lobby list"> | <img src="docs/screenshots/join.png" width="240" alt="Join screen"> | <img src="docs/screenshots/our-words.png" width="240" alt="Our words tab"> |
 | Create a room or tap one to join. Green dot = online now. | Pick a name and a team. The roster updates live. | Your secret words, plus every clue you've already used for each one. |
 
-| Give clues | Crack their words | Arabic + RTL |
+| Give clues | Reveal | Crack their words |
 | :---: | :---: | :---: |
-| <img src="docs/screenshots/round.png" width="240" alt="Round tab"> | <img src="docs/screenshots/enemy-words.png" width="240" alt="Enemy words tab"> | <img src="docs/screenshots/arabic.png" width="240" alt="Arabic interface"> |
-| Only the encryptor sees the code. Clues are published with **Submit**. | Enemy clues get filed under slots 1–4 automatically. Add your guesses and team notes. | One tap switches the whole UI to Arabic with a right-to-left layout. |
+| <img src="docs/screenshots/round.png" width="240" alt="Round tab"> | <img src="docs/screenshots/reveal.png" width="240" alt="Revealed round"> | <img src="docs/screenshots/enemy-words.png" width="240" alt="Enemy words tab"> |
+| Only the encryptor sees the code. Tap it in on the keypad (or 🎲 draw one), then **Submit** the clues. | The lock spins open to the real code and your guess lights up digit by digit. Tokens drop into the scoreboard. | Enemy clues get filed under slots 1–4 automatically. Add your guesses and team notes. |
+
+<p align="center">
+  <img src="docs/screenshots/arabic.png" width="240" alt="Arabic interface"><br>
+  <sub>One tap switches the whole UI to Arabic with a right-to-left layout.</sub>
+</p>
 
 ---
 
@@ -54,6 +59,15 @@ Friends on the same Wi-Fi open the second one.
 | --- | --- | --- |
 | 🃏 **Physical cards** | Playing with the real box | Pure note-taking with no turns or roles. Anyone types clues as they're said out loud. When a code card is revealed, punch in the 3 digits and every clue is **filed under the right keyword**. Token counters mirror the physical tokens. |
 | 📱 **App codes** | Playing without the code cards | The app draws secret codes, collects guesses from both teams and **scores tokens automatically**, including the win/lose banners. |
+
+### 📱 Made for the phone in your hand
+
+- 🔐 **Codes are 3D cipher locks.** Every code (your secret code, your team's guess, the interception) is a row of three rolling drums, drawn with three.js. Drawing a code or revealing one spins them like a slot machine, and on reveal each guessed digit turns green or red.
+- 🔢 **A keypad, not a grid.** Tap the digits in order like a PIN. Tap a drum first to change just that digit, ⌫ to undo. Digits can't repeat, so taken ones dim.
+- 🪙 **Tokens are coins.** The scoreboard has two slots for 🕵️ and two for 💥, since two of either ends the game. New tokens drop in with a bounce.
+- 👆 **Thumb-friendly.** Big tap targets, a bottom tab bar, and a sideways swipe to change tabs. The tab bar steps aside while the keyboard is open, and **Enter** jumps to the next clue.
+- 🏠 **Add to Home Screen** for a full-screen app with its own icon.
+- 🔋 **Easy on the battery.** The 3D layer only draws while something is moving, and phones without WebGL (or with reduced motion turned on) get plain digit tiles that work the same.
 
 ### Notes that do the work
 
@@ -80,10 +94,10 @@ Friends on the same Wi-Fi open the second one.
 
 ## 🎲 How a round works (app-codes mode)
 
-1. **Claim the role.** One teammate taps **"I'm giving the clues"**. Only they see the code (🎲 draws a random one).
+1. **Claim the role.** One teammate taps **"I'm giving the clues"**. Only they see the code (🎲 draws a random one, or tap one in).
 2. **Give clues.** They type 3 clues and hit **Submit**. Everyone sees them instantly.
-3. **Guess.** Your team enters its decode guess. From round 2, the enemy enters an intercept guess.
-4. **Reveal.** Tokens are scored automatically: **2 🕵️ interceptions wins**, **2 💥 miscommunications loses**. The clues are filed into the keyword columns.
+3. **Guess.** Your team taps its decode guess into the keypad. From round 2, the enemy enters an intercept guess.
+4. **Reveal.** The lock spins open and tokens are scored automatically: **2 🕵️ interceptions wins**, **2 💥 miscommunications loses**. The clues are filed into the keyword columns.
 
 In physical-cards mode these steps happen at the table. The app just captures the clues and revealed codes, then does the filing and token math.
 
@@ -125,7 +139,7 @@ This gives you a throwaway public URL. For a permanent one, add a public hostnam
 npm test          # or: node test/e2e.js
 ```
 
-A zero-dependency end-to-end suite with about 200 checks that runs in about 10 seconds. It starts a real server with a throwaway state file and plays as several players at once. It covers lobbies, ownership, team secrecy, both game modes, switch approvals, kicks and bans, timers, restarts, corrupt-save recovery and hostile input. It also tests the browser client's draft-merge and scoring logic.
+A zero-dependency end-to-end suite with about 230 checks that runs in under 20 seconds. It starts a real server with a throwaway state file and plays as several players at once. It covers lobbies, ownership, team secrecy, both game modes, switch approvals, kicks and bans, timers, restarts, corrupt-save recovery and hostile input. It also tests the browser client's draft-merge, scoring and keypad logic.
 
 ---
 
@@ -135,6 +149,18 @@ A zero-dependency end-to-end suite with about 200 checks that runs in about 10 s
 | --- | --- |
 | **Server** | One file with zero dependencies: Node HTTP + Server-Sent Events, and a filtered view for each client |
 | **Client** | A vanilla JS single page. Mobile-first, dark theme, English/Arabic with RTL |
+| **3D layer** | `public/viz.js`: the cipher locks and coins, built from `client/viz.js` with three.js bundled in (about 140 KB gzipped). The app works without it |
 | **State** | `game-state.json` (or the Docker volume). Delete it to reset everything |
+
+The server gzips text files and sends ETags, so phones only re-download what changed.
+
+### Changing the 3D layer
+
+`public/viz.js` is committed, so running the app never needs npm. Only to edit the locks or coins:
+
+```
+npm install        # three.js + esbuild, dev-only
+npm run build      # client/viz.js → public/viz.js
+```
 
 The screenshots in `docs/screenshots/` come from a demo game running on the real app.

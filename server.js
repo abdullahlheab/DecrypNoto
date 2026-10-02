@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const PORT = Number(process.env.PORT) || 4321;
 const PUB = path.join(__dirname, 'public');
@@ -635,6 +636,10 @@ const MIME = {
   '.png': 'image/png',
   '.json': 'application/json'
 };
+// text files go out gzipped (viz.js bundles three.js: ~540 KB raw, ~140 KB
+// gzipped), compressed once per file version
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
+const gzipCache = new Map();
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
@@ -709,14 +714,35 @@ const server = http.createServer((req, res) => {
   try { file = decodeURIComponent(file); } catch (e) { res.writeHead(400); res.end(); return; }
   const full = path.join(PUB, path.normalize(file));
   if (!full.startsWith(PUB + path.sep)) { res.writeHead(403); res.end(); return; }
-  fs.readFile(full, (e, data) => {
-    if (e) { res.writeHead(404, SECURITY_HEADERS); res.end('not found'); return; }
-    res.writeHead(200, {
-      'Content-Type': MIME[path.extname(full)] || 'application/octet-stream',
+  const notFound = () => { res.writeHead(404, SECURITY_HEADERS); res.end('not found'); };
+  fs.stat(full, (e, st) => {
+    if (e || !st.isFile()) { notFound(); return; }
+    // no-cache + ETag: phones revalidate every load but only re-download changes
+    const etag = `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+    const ext = path.extname(full);
+    const headers = {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
+      'ETag': etag,
       ...SECURITY_HEADERS
+    };
+    if (COMPRESSIBLE.has(ext)) headers['Vary'] = 'Accept-Encoding';
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); res.end(); return; }
+    fs.readFile(full, (e2, data) => {
+      if (e2) { notFound(); return; }
+      if (COMPRESSIBLE.has(ext) && data.length > 1024 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+        let c = gzipCache.get(full);
+        if (!c || c.etag !== etag) {
+          c = { etag, gz: zlib.gzipSync(data, { level: 9 }) };
+          gzipCache.set(full, c);
+        }
+        data = c.gz;
+        headers['Content-Encoding'] = 'gzip';
+      }
+      headers['Content-Length'] = data.length;
+      res.writeHead(200, headers);
+      res.end(req.method === 'HEAD' ? undefined : data);
     });
-    res.end(req.method === 'HEAD' ? undefined : data);
   });
 });
 

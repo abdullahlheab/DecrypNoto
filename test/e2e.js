@@ -8,6 +8,7 @@
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
@@ -145,6 +146,25 @@ async function httpAndSecurity() {
   check('app.js served as JS', (await fetch(BASE + '/app.js')).headers.get('content-type').startsWith('text/javascript'));
   check('style.css served as CSS', (await fetch(BASE + '/style.css')).headers.get('content-type').startsWith('text/css'));
   check('unknown file 404', (await fetch(BASE + '/nope.js')).status === 404);
+  // 3D layer: three.js bundle, gzipped, cacheable via ETag
+  check('index loads the 3D layer', html.includes('<script src="viz.js" defer>'));
+  const viz = await fetch(BASE + '/viz.js', { headers: { 'accept-encoding': 'gzip' } });
+  const vizBody = await viz.text();
+  check('viz.js served as JS', viz.headers.get('content-type').startsWith('text/javascript'));
+  check('viz.js gzipped when accepted', viz.headers.get('content-encoding') === 'gzip' && /WebGLRenderer|webgl/i.test(vizBody));
+  check('viz.js compressed size is small', Number(viz.headers.get('content-length')) < 200 * 1024, viz.headers.get('content-length'));
+  const raw = await new Promise(res => http.get(BASE + '/viz.js', r => { r.resume(); res(r); }));
+  check('no gzip unless asked', !raw.headers['content-encoding'] && Number(raw.headers['content-length']) > 300 * 1024);
+  const etag = viz.headers.get('etag');
+  check('ETag on static files', /^W\/".+"$/.test(etag || ''), etag);
+  const again = await fetch(BASE + '/viz.js', { headers: { 'if-none-match': etag } });
+  check('unchanged file → 304', again.status === 304 && (await again.text()) === '');
+  const mf = await fetch(BASE + '/manifest.json');
+  check('web app manifest served', mf.status === 200 && (await mf.json()).display === 'standalone');
+  for (const icon of ['/icon-192.png', '/icon-512.png']) {
+    const r = await fetch(BASE + icon);
+    check(`app icon ${icon}`, r.status === 200 && r.headers.get('content-type') === 'image/png');
+  }
   for (const p of ['/../server.js', '/%2e%2e/server.js', '/..%2fserver.js', '/%2e%2e%2f%2e%2e%2fetc%2fpasswd', '/public/../../server.js']) {
     const r = await fetch(BASE + p);
     const body = await r.text();
@@ -165,7 +185,6 @@ async function httpAndSecurity() {
 
   // an action sent on a connection that sat idle past Node's old 5s default
   // used to be reset by the server and silently lost
-  const http = require('http');
   const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
   const onSocket = (method, body) => new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port: PORT, method, path: method === 'GET' ? '/' : '/api/action', agent,
@@ -662,6 +681,22 @@ function clientLogic() {
   ] })}, 'black'))`));
   check('clues filed under the right keyword', cols[2].map(x => x.clue).join() === 'sun' && cols[0][0].clue === 'sea' && cols[3][0].clue === 'sky');
   check('incomplete codes are not filed', cols[2].length === 1);
+  // code lock keypad
+  const key = (code, cursor, d) => run(`JSON.stringify(keyInto(${JSON.stringify(code)}, ${JSON.stringify(cursor)}, ${d}))`);
+  const back = (code, cursor) => run(`JSON.stringify(keyBack(${JSON.stringify(code)}, ${JSON.stringify(cursor)}))`);
+  check('keypad fills the first empty drum', key([4, null, null], null, 2) === '[4,2,null]');
+  check('keypad fills a hole first', key([4, null, 1], null, 2) === '[4,2,1]');
+  check('keypad on a full code starts a new one', key([4, 2, 1], null, 3) === '[3,null,null]');
+  check('keypad ignores an untargeted repeat', key([4, null, null], null, 4) === '[4,null,null]');
+  check('keypad fills the tapped drum', key([4, 2, 1], 1, 3) === '[4,3,1]');
+  check('tapped drum takes a digit from another drum', key([4, 2, 1], 0, 1) === '[1,2,null]');
+  check('keypad accepts a hidden/blank code', key(null, null, 1) === '[1,null,null]' && key('hidden', null, 1) === '[1,null,null]');
+  check('⌫ clears the last digit', back([4, 2, 1], null) === '[4,2,null]' && back([4, null, 1], null) === '[4,null,null]');
+  check('⌫ clears the tapped drum', back([4, 2, 1], 0) === '[null,2,1]');
+  check('⌫ on an empty tapped drum clears the last digit', back([4, null, 1], 1) === '[4,null,null]');
+  check('⌫ on an empty code is a no-op', back([null, null, null], null) === '[null,null,null]');
+  check('reveal tints per drum', run(`matchTint([4, 2, 1], [4, 2, 3]).join()`) === 'g,g,r' && run(`matchTint(null, [4, 2, 3]).join()`) === 'd,d,d');
+
   check('client strings: every Arabic key exists in English', run(`Object.keys(STR.ar).every(k => k in STR.en)`));
   check('client strings: every English key translated', run(`Object.keys(STR.en).filter(k => !(k in STR.ar)).length`) === 0,
     run(`Object.keys(STR.en).filter(k => !(k in STR.ar))`));
